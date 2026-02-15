@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Vertical Tabs Sidebar",
+  "version": "1.4",
+  "description": "Vertical tabs and workspace manager.",
+  "permissions": [
+    "sidePanel",
+    "tabs",
+    "storage",
+    "tabGroups",
+    "favicon",
+    "sessions"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Open TabDeck"
+  },
+  "side_panel": {
+    "default_path": "src/ui/panel.html"
+  },
+  "icons": {
+    "128": "icons/icon.png"
+  }
+}
