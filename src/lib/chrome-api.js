@@ -21,21 +21,25 @@ export const getTabs = async () => {
     try { await chrome.tabs.update(tabId, { active: true }); } catch(e){}
   };
 
-  // [FIX] BULK INCOGNITO
+  // [FIXED] BULK INCOGNITO
   export const openInIncognito = async (tabIds) => {
-      try {
-          const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
-          const tabs = await Promise.all(ids.map(id => chrome.tabs.get(Number(id))));
-          const urls = tabs.map(t => t.url).filter(url => url && !url.startsWith('chrome://'));
-          
-          if (urls.length > 0) {
-              const win = await chrome.windows.create({ url: urls[0], incognito: true });
-              // Add rest URLs sequentially
-              for (let i = 1; i < urls.length; i++) {
-                  await chrome.tabs.create({ windowId: win.id, url: urls[i] });
-              }
-          }
-      } catch(e) { console.error("Incognito error:", e); }
+    try {
+        const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
+        // Получаем информацию о табах
+        const tabs = await Promise.all(ids.map(id => chrome.tabs.get(Number(id))));
+        
+        // Собираем чистые URL (исключаем системные страницы, они не откроются в инкогнито)
+        const urls = tabs
+            .map(t => t.url)
+            .filter(url => url && !url.startsWith('chrome://') && !url.startsWith('edge://') && !url.startsWith('about:'));
+        
+        if (urls.length > 0) {
+            // Передаем МАССИВ url. Chrome сам создаст окно с нужным количеством вкладок.
+            await chrome.windows.create({ url: urls, incognito: true });
+        }
+    } catch(e) { 
+        console.error("Incognito error:", e); 
+    }
   };
 
   export const tileTwoTabs = async (tabIdKeep, tabIdMove) => {
@@ -225,7 +229,6 @@ export const getTabs = async () => {
       } catch(e) {}
   };
 
-  // [NEW] COPY TABS TO GROUP (DUPLICATE THEN MOVE)
   export const copyTabsToGroup = async (tabIds, groupName) => {
       try {
           const ids = Array.isArray(tabIds) ? tabIds : [tabIds];
