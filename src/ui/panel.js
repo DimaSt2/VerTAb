@@ -1,66 +1,69 @@
 import * as api from '../lib/chrome-api.js';
 import * as storage from '../lib/storage.js';
 
-// --- DOM ELEMENTS ---
 const els = {
-  wsBar: document.getElementById('workspaces-bar'),
-  createWsBtn: document.getElementById('create-ws-btn'),
-  allWsBtn: document.getElementById('all-ws-toggle'),
-  zenModeBtn: document.getElementById('zen-mode-btn'),
-  settingsBtn: document.getElementById('settings-toggle'),
-  tabsList: document.getElementById('tabs-list'),
-  allProjectsList: document.getElementById('all-projects-list'),
-  searchInput: document.getElementById('search-input'),
-  projectSearch: document.getElementById('project-search'),
-  settingsMenu: document.getElementById('settings-menu'),
-  projectsDropdown: document.getElementById('projects-dropdown'),
-  closeProjectsBtn: document.getElementById('close-projects-menu'),
-  closeSettingsBtn: document.getElementById('close-settings-menu'),
-  dialog: document.getElementById('new-ws-dialog'),
-  dialogTitle: document.getElementById('dialog-title'),
-  dialogSubmitBtn: document.getElementById('dialog-submit-btn'),
-  cancelCreateBtn: document.getElementById('cancel-create-ws'),
-  newWsName: document.getElementById('new-ws-name'),
-  html: document.documentElement,
-  themeRadios: document.getElementsByName('themes'),
-  navBack: document.getElementById('nav-back'),
-  navForward: document.getElementById('nav-forward'),
-  navReload: document.getElementById('nav-reload'),
-  omnibox: document.getElementById('omnibox-input'),
-  masterToggle: document.getElementById('master-toggle'),
-  masterCheck: document.getElementById('master-check'),
-  managementPanel: document.getElementById('management-panel'),
-  bulkDelete: document.getElementById('bulk-delete'),
-  bulkMoveBtn: document.getElementById('bulk-move-btn'),
-  bulkMoveDropdown: document.getElementById('bulk-move-dropdown'),
-  bulkCopyBtn: document.getElementById('bulk-copy-btn'),
-  bulkCopyDropdown: document.getElementById('bulk-copy-dropdown'),
-  bulkSplit: document.getElementById('bulk-split'),
-  bulkIncognito: document.getElementById('bulk-incognito'),
-  bulkCloseAbove: document.getElementById('bulk-close-above'),
-  bulkCloseBelow: document.getElementById('bulk-close-below'),
-  pinnedBar: document.getElementById('pinned-bar'),
-  pinnedTabsScroll: document.getElementById('pinned-tabs-scroll'),
-  restoreBtn: document.getElementById('restore-btn')
+    wsBar: document.getElementById('workspaces-bar'),
+    createWsBtn: document.getElementById('create-ws-btn'),
+    allWsBtn: document.getElementById('all-ws-toggle'),
+    zenModeBtn: document.getElementById('zen-mode-btn'),
+    settingsBtn: document.getElementById('settings-toggle'),
+    tabsList: document.getElementById('tabs-list'),
+    allProjectsList: document.getElementById('all-projects-list'),
+    searchInput: document.getElementById('search-input'),
+    projectSearch: document.getElementById('project-search'),
+    settingsMenu: document.getElementById('settings-menu'),
+    projectsDropdown: document.getElementById('projects-dropdown'),
+    closeProjectsBtn: document.getElementById('close-projects-menu'),
+    closeSettingsBtn: document.getElementById('close-settings-menu'),
+    dialog: document.getElementById('new-ws-dialog'),
+    dialogTitle: document.getElementById('dialog-title'),
+    dialogSubmitBtn: document.getElementById('dialog-submit-btn'),
+    cancelCreateBtn: document.getElementById('cancel-create-ws'),
+    newWsName: document.getElementById('new-ws-name'),
+    html: document.documentElement,
+    themeRadios: document.getElementsByName('themes'),
+    navBack: document.getElementById('nav-back'),
+    navForward: document.getElementById('nav-forward'),
+    navReload: document.getElementById('nav-reload'),
+    omnibox: document.getElementById('omnibox-input'),
+    masterToggle: document.getElementById('master-toggle'),
+    masterCheck: document.getElementById('master-check'),
+    managementPanel: document.getElementById('management-panel'),
+    bulkDelete: document.getElementById('bulk-delete'),
+    bulkMoveBtn: document.getElementById('bulk-move-btn'),
+    bulkMoveDropdown: document.getElementById('bulk-move-dropdown'),
+    bulkCopyBtn: document.getElementById('bulk-copy-btn'),
+    bulkCopyDropdown: document.getElementById('bulk-copy-dropdown'),
+    bulkSplit: document.getElementById('bulk-split'),
+    bulkIncognito: document.getElementById('bulk-incognito'),
+    bulkCloseAbove: document.getElementById('bulk-close-above'),
+    bulkCloseBelow: document.getElementById('bulk-close-below'),
+    pinnedBar: document.getElementById('pinned-bar'),
+    pinnedTabsScroll: document.getElementById('pinned-tabs-scroll'),
+    restoreBtn: document.getElementById('restore-btn'),
+    fixedNewTabBtn: document.getElementById('fixed-new-tab-btn')
 };
 
-// --- GLOBAL STATE ---
 let draggingTabId = null;
 let draggingTabPinned = false;
 let editingWorkspaceId = null;
-let isSwitchingProgrammatically = false; 
+let isSwitchingProgrammatically = false;
 let isSelectionDragging = false;
 let selectionTargetState = false;
 let isDragging = false;
 let dragTimeout = null;
+let currentTabs = [];
+let timeUpdateInterval = null;
+let previousActiveTabId = null;
+let draggedWsMenuId = null; 
 
-// --- HELPERS ---
 function escapeHtml(str) {
     if (!str) return '';
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
-function formatTimeAgo(timestamp) {
+function formatTimeAgo(timestamp, isActive = false) {
+    if (isActive) return 'Active now';
     if (!timestamp) return '';
     const now = Date.now();
     const diff = now - timestamp;
@@ -89,7 +92,7 @@ function getFaviconUrl(tabUrl) {
 
 function updateZenIcon(isFull) {
     if (!els.zenModeBtn) return;
-    els.zenModeBtn.innerHTML = isFull 
+    els.zenModeBtn.innerHTML = isFull
         ? `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3"></path><path d="M21 8h-3a2 2 0 0 1-2-2V3"></path><path d="M3 16h3a2 2 0 0 1 2 2v3"></path><path d="M16 21v-3a2 2 0 0 1 2-2h3"></path></svg>`
         : `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"></path><path d="M9 21H3v-6"></path><path d="M21 3l-7 7"></path><path d="M3 21l7-7"></path></svg>`;
 }
@@ -98,7 +101,7 @@ async function updateOmnibox() {
     if (!els.omnibox) return;
     try {
         const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tab?.url && document.activeElement?.tagName !== 'INPUT') {
+        if (tab?.url && document.activeElement !== els.omnibox) {
             els.omnibox.value = tab.url;
         }
     } catch(e) {}
@@ -106,17 +109,65 @@ async function updateOmnibox() {
 
 function handleSearchInput() {
     if(!els.searchInput || !els.tabsList) return;
-    const filter = els.searchInput.value.toLowerCase();
+    const filter = els.searchInput.value.toLowerCase().trim();
     els.tabsList.querySelectorAll('.tab-card').forEach(card => {
-        const title = card.querySelector('.tab-title')?.innerText.toLowerCase() || '';
-        if (title.includes(filter)) card.classList.remove('hidden');
-        else card.classList.add('hidden');
+        const title = (card.querySelector('.tab-title')?.innerText || '').toLowerCase();
+        const url = (card.dataset.url || '').toLowerCase();
+        if (!filter || title.includes(filter) || url.includes(filter)) {
+            card.classList.remove('hidden');
+        } else {
+            card.classList.add('hidden');
+        }
     });
 }
 
-const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const debounce = (fn, delay) => {
+    let timer;
+    return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+    };
+};
 
-// --- DRAG LOGIC ---
+function updateTimeDisplays() {
+    document.querySelectorAll('.tab-card').forEach(card => {
+        const tabId = Number(card.dataset.id);
+        const tab = currentTabs.find(t => t.id === tabId);
+        if (!tab) return;
+        const metaEl = card.querySelector('.tab-meta');
+        if (metaEl) {
+            metaEl.textContent = formatTimeAgo(tab.lastAccessed, tab.isActive);
+        }
+    });
+}
+
+function startTimeUpdates() {
+    if (timeUpdateInterval) clearInterval(timeUpdateInterval);
+    timeUpdateInterval = setInterval(updateTimeDisplays, 10000);
+}
+
+function stopTimeUpdates() {
+    if (timeUpdateInterval) {
+        clearInterval(timeUpdateInterval);
+        timeUpdateInterval = null;
+    }
+}
+
+function scrollToActiveTab() {
+    if (!els.tabsList) return;
+    const activeCard = els.tabsList.querySelector('.tab-card.active');
+    if (activeCard) {
+        activeCard.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+}
+
+function scrollToTabById(tabId) {
+    if (!els.tabsList) return;
+    const card = els.tabsList.querySelector(`[data-id="${tabId}"]`);
+    if (card) {
+        card.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+}
 
 function startDrag(id, isPinned) {
     draggingTabId = id;
@@ -144,7 +195,6 @@ function endDrag() {
     });
     if(els.pinnedBar) els.pinnedBar.style.backgroundColor = '';
     if(els.tabsList) els.tabsList.classList.remove('drag-over-pinned');
-    setTimeout(renderTabs, 50);
 }
 
 function setupTabsListDropHandlers() {
@@ -167,7 +217,7 @@ function setupTabsListDropHandlers() {
         els.pinnedBar.ondragover = (e) => {
             if (!draggingTabPinned && draggingTabId) {
                 e.preventDefault();
-                els.pinnedBar.style.backgroundColor = 'var(--c-bg-secondary)'; 
+                els.pinnedBar.style.backgroundColor = 'var(--c-bg-secondary)';
             }
         };
         els.pinnedBar.ondragleave = () => { els.pinnedBar.style.backgroundColor = ''; };
@@ -181,95 +231,334 @@ function setupTabsListDropHandlers() {
     }
 }
 
-// --- INITIALIZATION ---
+function createTabElement(tab, index) {
+    const div = document.createElement('div');
+    div.className = `tab-card ${tab.isActive ? 'active' : ''}`;
+    div.draggable = true;
+    div.dataset.id = tab.id;
+    div.dataset.url = tab.url;
 
-document.addEventListener('DOMContentLoaded', async () => {
-  setupEventListeners();
-  setupTabsListDropHandlers();
+    div.ondragstart = (e) => { 
+        if(e.target.closest('.tab-check-wrapper') || e.target.closest('.add-tab-btn')) {
+            e.preventDefault(); 
+            return;
+        }
+        const checkbox = div.querySelector('.tab-check-box');
+        if (checkbox?.checked) {
+            const ids = Array.from(document.querySelectorAll('.tab-check-box:checked')).map(cb => cb.closest('.tab-card').dataset.id);
+            e.dataTransfer.setData('text/plain', JSON.stringify(ids));
+        } else {
+            e.dataTransfer.setData('text/plain', JSON.stringify([tab.id]));
+        }
+        startDrag(tab.id, false);
+        div.style.opacity = '0.4';
+        e.dataTransfer.effectAllowed = 'move';
+    };
 
-  const savedManageMode = localStorage.getItem('manageMode');
-  if (savedManageMode === 'on') {
-      if(els.masterToggle) els.masterToggle.checked = true;
-      if(els.managementPanel) els.managementPanel.classList.add('visible');
-  } else {
-      document.body.classList.add('manage-mode-off');
-  }
+    div.ondragend = () => endDrag();
 
-  try {
-      await syncGeneralOnLoad();
-      await renderWorkspacesBar();
-      await renderTabs();
-      updateOmnibox();
-      
-      if(els.searchInput) els.searchInput.focus();
-      
-      api.subscribeToUpdates(() => { if (!isDragging) { renderTabs(); updateOmnibox(); } });
-      api.subscribeToActivation(async (activeInfo) => {
-          updateOmnibox();
-          if (isSwitchingProgrammatically) return;
-          try {
-              const tab = await chrome.tabs.get(activeInfo.tabId);
-              const { workspaces, activeId } = await storage.getWorkspaces();
-              let targetWsId = 'ws_default'; 
-              if (tab.groupId !== -1) {
-                  const group = await chrome.tabGroups.get(tab.groupId);
-                  const groupName = (group.title || '').trim().toLowerCase();
-                  const matchedWs = Object.values(workspaces).find(ws => ws.name.trim().toLowerCase() === groupName);
-                  if (matchedWs) targetWsId = matchedWs.id;
-              }
-              if (targetWsId !== activeId) {
-                  await storage.setActiveWorkspace(targetWsId);
-                  renderWorkspacesBar();
-                  renderTabs();
-                  if (tab.groupId !== -1) await api.focusOnGroup(tab.groupId);
-              } else {
-                  if (!isDragging) renderTabs();
-              }
-          } catch(e) {}
-      });
+    div.ondragover = (e) => { 
+        e.preventDefault(); 
+        if(draggingTabId === tab.id) return;
+        const rect = div.getBoundingClientRect(); 
+        div.classList.remove('sort-target-top', 'sort-target-bottom');
+        if (e.clientY < rect.top + rect.height/2) div.classList.add('sort-target-top');
+        else div.classList.add('sort-target-bottom');
+    };
 
-      chrome.tabs.onCreated.addListener(() => {
-          if (chrome.runtime.lastError) return;
-          if (!isDragging) requestAnimationFrame(renderTabs);
-      });
+    div.ondragleave = () => div.classList.remove('sort-target-top', 'sort-target-bottom');
 
-      if(els.restoreBtn) {
-          els.restoreBtn.addEventListener('click', () => {
-              try { if (chrome.sessions?.restore) chrome.sessions.restore(); } catch(e) { console.error(e); }
-          });
-      }
+    div.ondrop = async (e) => { 
+        e.preventDefault(); 
+        div.classList.remove('sort-target-top', 'sort-target-bottom'); 
+        if (draggingTabPinned) return; 
+        const rect = div.getBoundingClientRect(); 
+        const newIndex = e.clientY >= rect.top + rect.height/2 ? tab.index + 1 : tab.index; 
+        try {
+            const data = e.dataTransfer.getData('text/plain');
+            if (data) {
+                const ids = JSON.parse(data);
+                if(Array.isArray(ids) && ids.length) await api.moveTab(ids.map(Number), newIndex);
+            }
+        } catch(err) {}
+    };
 
-      document.addEventListener('keydown', (e) => {
-          if (document.activeElement?.tagName === 'INPUT') return;
-          if (e.key >= '0' && e.key <= '9' && !e.ctrlKey && !e.metaKey && !e.altKey) {
-              e.preventDefault();
-              const num = parseInt(e.key);
-              const index = num === 0 ? 9 : num - 1; 
-              const cards = document.querySelectorAll('.tab-card');
-              if (cards[index]) {
-                  api.activateTab(Number(cards[index].dataset.id));
-              }
-          }
-      });
+    const checkWrapper = document.createElement('div');
+    checkWrapper.className = 'tab-check-wrapper';
 
-      document.body.setAttribute('tabindex', '-1');
-      
-      // Сброс режима "рисования" чекбоксами
-      window.addEventListener('mouseup', () => {
-          isSelectionDragging = false;
-          if (isDragging) endDrag();
-      });
+    if (index < 10) {
+        const badge = document.createElement('kbd');
+        badge.className = 'shortcut-badge';
+        badge.innerText = index === 9 ? '0' : (index + 1);
+        div.appendChild(badge);
+    }
 
-  } catch (e) { console.error("Init failed:", e); }
-});
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'tab-check-box';
+    checkbox.setAttribute('aria-label', 'Select tab');
+    checkbox.style.pointerEvents = 'none'; 
+    checkWrapper.appendChild(checkbox);
 
-// --- MANAGEMENT PANEL ---
+    checkWrapper.addEventListener('mousedown', (e) => {
+        e.stopPropagation(); e.preventDefault(); 
+        isSelectionDragging = true;
+        const newState = !checkbox.checked;
+        checkbox.checked = newState;
+        selectionTargetState = newState;
+        updateManagementPanel();
+    });
+
+    checkWrapper.addEventListener('mouseenter', () => {
+        if (isSelectionDragging) {
+            checkbox.checked = selectionTargetState;
+            updateManagementPanel();
+        }
+    });
+
+    checkWrapper.addEventListener('click', (e) => e.stopPropagation());
+    div.appendChild(checkWrapper);
+
+    const divider = document.createElement('div');
+    divider.className = 'tab-divider';
+    div.appendChild(divider);
+
+    const isMuted = tab.mutedInfo?.muted ?? false;
+    const hasAudio = tab.audible || isMuted;
+    let audioHtml = '';
+    if (hasAudio) {
+        const audioIcon = isMuted 
+            ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>` 
+            : `<div class="audio-wave"><div class="audio-bar"></div><div class="audio-bar"></div><div class="audio-bar"></div></div>`;
+        audioHtml = `<div class="audio-indicator ${isMuted ? 'muted' : ''}" data-tooltip="${isMuted ? 'Unmute' : 'Mute'}" data-tooltip-pos="up">${audioIcon}</div>`;
+    }
+
+    const timeAgoText = formatTimeAgo(tab.lastAccessed, tab.isActive);
+
+    const contentHtml = `
+        <img src="${getFaviconUrl(tab.url)}" class="tab-icon" alt="">
+        <div class="tab-info">
+            <div class="tab-title">${escapeHtml(tab.title)}</div>
+            <div class="tab-meta">${escapeHtml(timeAgoText)}</div>
+        </div>
+        <div class="tab-actions">
+            <button class="tab-action-btn pin-btn" data-tooltip="Pin tab" data-tooltip-pos="up" aria-label="Pin tab">
+                <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16 12V4H17V2H7V4H8V12L6 14V16H11.2V22H12.8V16H18V14L16 12Z"/></svg>
+            </button>
+            <button class="tab-action-btn incognito-btn" data-tooltip="Open in Incognito" data-tooltip-pos="up" aria-label="Open incognito">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5c-7 0 -10 7 -10 7s3 7 10 7s10 -7 10 -7s-3 -7 -10 -7z"></path><circle cx="12" cy="12" r="3"></circle><path d="M3 3l18 18"></path></svg>
+            </button>
+            <button class="tab-action-btn duplicate-btn" data-tooltip="Duplicate" data-tooltip-pos="up" aria-label="Duplicate tab">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            </button>
+            ${audioHtml}
+            <button class="tab-action-btn close-btn" data-tooltip="Close" data-tooltip-pos="up" aria-label="Close tab">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            </button>
+        </div>
+    `;
+    div.insertAdjacentHTML('beforeend', contentHtml);
+
+    const btnTop = document.createElement('div');
+    btnTop.className = 'add-tab-btn top';
+    btnTop.onclick = (e) => { e.stopPropagation(); api.createTabAtIndex(tab.index, true, tab.id); };
+
+    const btnBottom = document.createElement('div');
+    btnBottom.className = 'add-tab-btn bottom';
+    btnBottom.onclick = (e) => { e.stopPropagation(); api.createTabAtIndex(tab.index + 1, true, tab.id); };
+
+    const showTop = () => { 
+        btnTop.classList.add('visible'); 
+        btnBottom.classList.remove('visible'); 
+        div.classList.add('gradient-top'); 
+        div.classList.remove('gradient-bottom'); 
+    };
+    const showBottom = () => { 
+        btnTop.classList.remove('visible'); 
+        btnBottom.classList.add('visible'); 
+        div.classList.remove('gradient-top'); 
+        div.classList.add('gradient-bottom'); 
+    };
+    const clearAll = () => { 
+        btnTop.classList.remove('visible'); 
+        btnBottom.classList.remove('visible'); 
+        div.classList.remove('gradient-top', 'gradient-bottom'); 
+    };
+
+    div.onmousemove = (e) => {
+        if (isSelectionDragging) return;
+        const rect = div.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        const isManageMode = !document.body.classList.contains('manage-mode-off');
+        const triggerZone = isManageMode ? 75 : 60; 
+
+        if (x < triggerZone && (!isManageMode || x > 30)) { 
+            if (y < rect.height / 2) showTop();
+            else showBottom();
+        } else {
+            clearAll();
+        }
+    };
+
+    btnTop.onmouseenter = showTop;
+    btnBottom.onmouseenter = showBottom;
+    div.onmouseleave = clearAll;
+
+    div.appendChild(btnTop);
+    div.appendChild(btnBottom);
+
+    div.onclick = (e) => {
+        if (e.target.closest('.tab-check-wrapper, .add-tab-btn, .tab-action-btn, .audio-indicator')) return;
+        api.activateTab(tab.id);
+    };
+
+    div.querySelector('.pin-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.togglePinTab(tab.id, tab.isPinned); });
+    div.querySelector('.incognito-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.openInIncognito([tab.id]); });
+    div.querySelector('.duplicate-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.duplicateTab(tab.id); });
+    div.querySelector('.audio-indicator')?.addEventListener('click', (e) => { e.stopPropagation(); api.toggleMuteTab(tab.id, isMuted); });
+    div.querySelector('.close-btn')?.addEventListener('click', (e) => { 
+        e.stopPropagation(); 
+        div.classList.add('closing');
+        div.addEventListener('transitionend', () => { api.closeTab(tab.id); }, { once: true });
+        setTimeout(() => api.closeTab(tab.id), 200);
+    });
+
+    return div;
+}
+
+function renderPinnedBar(pinnedTabs) {
+    if (!els.pinnedTabsScroll || !els.pinnedBar) return;
+    els.pinnedTabsScroll.innerHTML = '';
+
+    if (pinnedTabs.length === 0) {
+        els.pinnedBar.classList.remove('visible');
+        return;
+    }
+    els.pinnedBar.classList.add('visible');
+
+    pinnedTabs.forEach((tab, index) => {
+        const item = document.createElement('div');
+        item.className = `pinned-tab-item ${tab.isActive ? 'active' : ''}`;
+        item.dataset.id = tab.id;
+        item.dataset.tooltip = tab.title;
+        item.dataset.tooltipPos = 'down';
+        item.draggable = true;
+        
+        item.innerHTML = `
+            <img src="${getFaviconUrl(tab.url)}" alt="">
+            <div class="pinned-tab-close">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                </svg>
+            </div>
+        `;
+        
+        item.onclick = (e) => {
+            if (e.target.closest('.pinned-tab-close')) {
+                e.stopPropagation();
+                api.closeTab(tab.id);
+                return;
+            }
+            api.activateTab(tab.id);
+        };
+        
+        item.ondragstart = (e) => {
+            startDrag(tab.id, true);
+            e.dataTransfer.setData('text/plain', JSON.stringify([tab.id]));
+            e.dataTransfer.effectAllowed = 'move';
+            item.style.opacity = '0.4';
+        };
+        
+        item.ondragend = () => endDrag();
+        
+        item.ondragover = (e) => { 
+            e.preventDefault(); 
+            if (draggingTabPinned && draggingTabId !== tab.id) {
+                item.classList.add('drag-over');
+            }
+        };
+        item.ondragleave = () => item.classList.remove('drag-over');
+        
+        item.ondrop = async (e) => {
+            e.preventDefault();
+            item.classList.remove('drag-over');
+            if (draggingTabPinned && draggingTabId) {
+                await api.moveTab([Number(draggingTabId)], index);
+            }
+        };
+        
+        els.pinnedTabsScroll.appendChild(item);
+    });
+}
+
+async function renderTabs(forceFullRender = false) {
+    if (isDragging) return;
+
+    const tabs = await api.getTabs();
+    const { activeId, workspaces } = await storage.getWorkspaces();
+
+    if (!workspaces || !workspaces[activeId]) return;
+    const currentWs = workspaces[activeId];
+
+    let visibleTabs = [];
+    if (activeId === 'ws_default') {
+        const group = await api.findGroup("General");
+        if (group) visibleTabs = tabs.filter(t => t.groupId === group.id);
+        else visibleTabs = tabs.filter(t => t.groupId === -1);
+    } else {
+        const group = await api.findGroup(currentWs.name);
+        if (group) visibleTabs = tabs.filter(t => t.groupId === group.id);
+    }
+
+    const pinnedTabs = visibleTabs.filter(t => t.isPinned);
+    const unpinnedTabs = visibleTabs.filter(t => !t.isPinned);
+
+    currentTabs = unpinnedTabs;
+    
+    const activeTab = unpinnedTabs.find(t => t.isActive);
+    if (activeTab) previousActiveTabId = activeTab.id;
+
+    renderPinnedBar(pinnedTabs);
+
+    if (!forceFullRender) {
+        const existingCards = Array.from(els.tabsList.querySelectorAll('.tab-card'));
+        const existingIds = existingCards.map(c => Number(c.dataset.id));
+        const newIds = unpinnedTabs.map(t => t.id);
+        
+        if (JSON.stringify(existingIds) === JSON.stringify(newIds)) {
+            unpinnedTabs.forEach(tab => {
+                const card = els.tabsList.querySelector(`[data-id="${tab.id}"]`);
+                if (card) {
+                    if (tab.isActive) card.classList.add('active');
+                    else card.classList.remove('active');
+                    const metaEl = card.querySelector('.tab-meta');
+                    if (metaEl) metaEl.textContent = formatTimeAgo(tab.lastAccessed, tab.isActive);
+                }
+            });
+            handleSearchInput();
+            updateManagementPanel();
+            return;
+        }
+    }
+
+    els.tabsList.innerHTML = '';
+    unpinnedTabs.forEach((tab, index) => {
+        els.tabsList.appendChild(createTabElement(tab, index));
+    });
+
+    handleSearchInput();
+    updateManagementPanel();
+    setTimeout(scrollToActiveTab, 50);
+}
 
 function updateManagementPanel() {
     if (!els.managementPanel) return;
     const checked = document.querySelectorAll('.tab-check-box:checked');
     const count = checked.length;
-    
+
     const allBoxes = document.querySelectorAll('.tab-check-box');
     if (els.masterCheck) {
         if (allBoxes.length > 0 && count === allBoxes.length) {
@@ -283,7 +572,7 @@ function updateManagementPanel() {
             els.masterCheck.indeterminate = false;
         }
     }
-    
+
     els.managementPanel.classList.remove('single-selected', 'dual-selected');
     if (count === 1) els.managementPanel.classList.add('single-selected');
     else if (count === 2) els.managementPanel.classList.add('dual-selected');
@@ -293,6 +582,8 @@ async function handleBulkAction(action) {
     const checked = document.querySelectorAll('.tab-check-box:checked');
     const ids = Array.from(checked).map(cb => Number(cb.closest('.tab-card').dataset.id));
     if (ids.length === 0) return;
+
+    isSwitchingProgrammatically = true;
 
     const actionsMap = {
         'delete': () => api.closeTab(ids),
@@ -304,8 +595,12 @@ async function handleBulkAction(action) {
 
     if (actionsMap[action]) {
         await actionsMap[action]();
+        document.querySelectorAll('.tab-check-box').forEach(cb => cb.checked = false);
         updateManagementPanel();
+        renderTabs(true);
     }
+    
+    setTimeout(() => { isSwitchingProgrammatically = false; }, 500);
 }
 
 async function closeRelative(currentId, direction) {
@@ -331,128 +626,70 @@ async function setupBulkMoveDropdown() {
             const item = document.createElement('div');
             item.className = 'dropdown-item';
             item.innerText = escapeHtml(ws.name);
-            item.onclick = async () => {
+            item.addEventListener('mousedown', async (e) => {
+                e.preventDefault(); 
+                isSwitchingProgrammatically = true; 
+                
                 const checked = document.querySelectorAll('.tab-check-box:checked');
                 const ids = Array.from(checked).map(cb => Number(cb.closest('.tab-card').dataset.id));
-                if (idx === 0) await api.moveTabsToGroup(ids, ws.name);
-                else await api.copyTabsToGroup(ids, ws.name);
-                renderTabs();
-            };
+                
+                document.querySelectorAll('.tab-check-box').forEach(cb => cb.checked = false);
+                updateManagementPanel();
+                
+                if (idx === 0) {
+                    await api.moveTabsToGroup(ids, ws.name);
+                } else {
+                    await api.copyTabsToGroup(ids, ws.name);
+                }
+                
+                renderTabs(true);
+                setTimeout(() => { isSwitchingProgrammatically = false; }, 500);
+            });
             dropdown.appendChild(item);
         });
     });
 }
 
+// Строгий порядок воркспейсов: General всегда 0
+async function getOrderedIds() {
+    const { workspaces, visibleIds } = await storage.getWorkspaces();
+    let allIds = Object.keys(workspaces);
+    let orderedIds = ['ws_default', ...visibleIds.filter(id => id !== 'ws_default' && allIds.includes(id))];
+    allIds.forEach(id => { if(!orderedIds.includes(id)) orderedIds.push(id); });
+    return { workspaces, orderedIds };
+}
+
+async function saveOrderedIds(orderedIds) {
+    await chrome.storage.local.set({ visibleProjectIds: orderedIds });
+}
+
+async function hardSyncWithChrome() {
+    const groups = await chrome.tabGroups.query({ windowId: chrome.windows.WINDOW_ID_CURRENT });
+    let { workspaces, orderedIds } = await getOrderedIds();
+    let changed = false;
+
+    for (const group of groups) {
+        const groupName = group.title ? group.title.trim() : "";
+        if (!groupName || groupName.toLowerCase() === 'general') continue;
+
+        const existingWs = Object.values(workspaces).find(ws => ws.name.toLowerCase() === groupName.toLowerCase());
+        
+        if (!existingWs) {
+            const newId = 'ws_' + Date.now() + Math.random().toString(36).substr(2, 5);
+            workspaces[newId] = { id: newId, name: groupName, tabs: [], lastActive: Date.now() };
+            orderedIds.splice(1, 0, newId);
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        orderedIds = [...new Set(orderedIds)];
+        await chrome.storage.local.set({ workspaces, visibleProjectIds: orderedIds });
+    }
+}
+
 async function syncGeneralOnLoad() {
-    const tabs = await api.getTabs();
-    const generalTabs = tabs.filter(t => t.groupId === -1);
-    await storage.saveTabsToWorkspace('ws_default', generalTabs);
-}
-
-// --- RENDER LOGIC ---
-
-function renderPinnedBar(pinnedTabs) {
-    if (!els.pinnedTabsScroll || !els.pinnedBar) return;
-    els.pinnedTabsScroll.innerHTML = '';
-    
-    if (pinnedTabs.length === 0) {
-        els.pinnedBar.classList.remove('visible');
-        return;
-    }
-    els.pinnedBar.classList.add('visible');
-    
-    pinnedTabs.forEach((tab) => {
-        const item = document.createElement('div');
-        item.className = `pinned-tab-item ${tab.isActive ? 'active' : ''}`;
-        item.dataset.id = tab.id;
-        item.dataset.index = tab.index; 
-        item.dataset.tooltip = tab.title;
-        item.dataset.tooltipPos = 'down';
-        item.draggable = true;
-        
-        item.innerHTML = `
-            <img src="${getFaviconUrl(tab.url)}" alt="">
-            <div class="pinned-tab-close" aria-label="Close pinned tab">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-            </div>
-        `;
-        
-        item.onclick = (e) => {
-            if (e.target.closest('.pinned-tab-close')) {
-                e.stopPropagation();
-                api.closeTab(tab.id);
-                return;
-            }
-            api.activateTab(tab.id);
-        };
-        
-        item.ondragstart = (e) => {
-            startDrag(tab.id, true);
-            e.dataTransfer.setData('text/plain', JSON.stringify([tab.id]));
-            e.dataTransfer.effectAllowed = 'move';
-            item.style.opacity = '0.4';
-        };
-        item.ondragend = () => endDrag();
-        item.ondragover = (e) => { 
-            e.preventDefault(); 
-            if (draggingTabPinned && draggingTabId !== tab.id) {
-                item.classList.add('drag-over');
-            }
-        };
-        item.ondragleave = () => item.classList.remove('drag-over');
-        item.ondrop = async (e) => {
-            e.preventDefault();
-            item.classList.remove('drag-over');
-            if (draggingTabPinned && draggingTabId) {
-                await api.moveTab([Number(draggingTabId)], tab.index);
-            }
-        };
-        els.pinnedTabsScroll.appendChild(item);
-    });
-}
-
-async function renderTabs() {
-    if (!els.tabsList || isDragging) return;
-
-    const tabs = await api.getTabs();
-    const { activeId, workspaces } = await storage.getWorkspaces();
-    
-    if (!workspaces || !workspaces[activeId]) return;
-    const currentWs = workspaces[activeId];
-
-    els.tabsList.innerHTML = '';
-    
-    let visibleTabs = [];
-    if (activeId === 'ws_default') {
-        const group = await api.findGroup("General");
-        if (group) visibleTabs = tabs.filter(t => t.groupId === group.id);
-        else visibleTabs = tabs.filter(t => t.groupId === -1);
-    } else {
-        const group = await api.findGroup(currentWs.name);
-        if (group) visibleTabs = tabs.filter(t => t.groupId === group.id);
-    }
-
-    const pinnedTabs = visibleTabs.filter(t => t.isPinned);
-    const unpinnedTabs = visibleTabs.filter(t => !t.isPinned);
-    
-    renderPinnedBar(pinnedTabs);
-    
-    const lastIndex = unpinnedTabs.length - 1;
-    unpinnedTabs.forEach((tab, index) => {
-        els.tabsList.appendChild(createTabElement(tab, index, lastIndex));
-    });
-    
-    const newTabBtn = document.createElement('div');
-    newTabBtn.className = 'new-tab-bottom-btn';
-    newTabBtn.innerHTML = '<span>+</span> New Tab';
-    newTabBtn.onclick = () => api.createTabAtIndex(visibleTabs.length, true);
-    els.tabsList.appendChild(newTabBtn);
-    
-    handleSearchInput();
-    updateManagementPanel();
+    await api.enforceGeneralGroup();
 }
 
 async function switchWorkspace(targetId) {
@@ -461,90 +698,263 @@ async function switchWorkspace(targetId) {
         const { workspaces, activeId } = await storage.getWorkspaces();
         if (targetId === activeId) {
             const ws = workspaces[targetId];
-            const group = await api.findGroup(ws.name);
-            if (group) await api.focusOnGroup(group.id);
+            await api.activateWorkspace(ws.name);
             isSwitchingProgrammatically = false;
             return;
         }
 
         const targetWs = workspaces[targetId];
         await storage.setActiveWorkspace(targetId);
-        await storage.updateVisibleProjects(targetId);
-
-        if (targetId === 'ws_default') {
-            const gid = await api.groupAllUngroupedTabs();
-            if (gid) {
-                await api.focusOnGroup(gid);
-                await api.activateFirstTabInGroup(gid);
-            }
-        } else {
-            let group = await api.findGroup(targetWs.name);
-            if (group) {
-                await api.focusOnGroup(group.id);
-                await api.activateFirstTabInGroup(group.id);
-            } else {
-                const newGroupId = await api.createNewProjectGroup(targetWs.name);
-                await api.focusOnGroup(newGroupId);
-            }
+        
+        let { orderedIds } = await getOrderedIds();
+        const targetIndex = orderedIds.indexOf(targetId);
+        if (targetIndex >= 4) {
+            orderedIds.splice(targetIndex, 1);
+            orderedIds.splice(1, 0, targetId);
+            await saveOrderedIds(orderedIds);
         }
+
+        await api.activateWorkspace(targetWs.name);
+
         renderWorkspacesBar();
-        renderTabs();
+        renderTabs(true);
     } catch (e) { console.error(e); } 
-    finally { 
-        await wait(500);
-        isSwitchingProgrammatically = false; 
-    }
+    finally { setTimeout(() => { isSwitchingProgrammatically = false; }, 500); }
 }
 
 async function renderAllProjectsList() {
-    const { workspaces, visibleIds } = await storage.getWorkspaces();
+    const { workspaces, orderedIds } = await getOrderedIds();
+    const { activeId } = await storage.getWorkspaces();
     els.allProjectsList.innerHTML = '';
+
     const filterText = els.projectSearch ? els.projectSearch.value.toLowerCase() : '';
-    
-    Object.keys(workspaces).forEach(id => {
-        if (id === 'ws_default') return;
+
+    const createRow = (id, slotIndex = null) => {
         const ws = workspaces[id];
-        const safeName = escapeHtml(ws.name);
-        if (filterText && !safeName.toLowerCase().includes(filterText)) return;
-        
+        if (!ws) return null;
+        if (filterText && !ws.name.toLowerCase().includes(filterText)) return null;
+
         const row = document.createElement('div');
-        row.className = 'project-row';
-        row.innerText = safeName;
-        if (visibleIds.includes(id)) row.style.fontWeight = 'bold';
-        row.onclick = () => switchWorkspace(id);
+        row.className = `project-row ${id === activeId ? 'active' : ''}`;
         
-        const delBtn = document.createElement('button');
-        delBtn.className = 'delete-project-btn';
-        delBtn.setAttribute('aria-label', `Delete ${safeName}`);
-        delBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
-        delBtn.onclick = async (e) => {
-            e.stopPropagation();
-            if (confirm(`Delete workspace "${safeName}"?`)) {
-                await storage.deleteWorkspace(id);
-                await api.closeGroup(ws.name);
-                renderWorkspacesBar();
-                renderAllProjectsList();
-            }
+        if (id !== 'ws_default') {
+            row.setAttribute('draggable', 'true');
+        }
+        
+        let contentHTML = ``;
+        if (slotIndex !== null) {
+            contentHTML += `<kbd class="shortcut-badge" style="position:relative; top:auto; left:auto; margin-right:8px; flex-shrink:0;">${slotIndex}</kbd>`;
+        } else if (id !== 'ws_default') {
+            contentHTML += `<div style="width:14px; margin-right:8px; flex-shrink:0;"></div>`; 
+        } else {
+            contentHTML += `<div style="width:14px; margin-right:8px; flex-shrink:0;"></div>`; 
+        }
+        contentHTML += `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(ws.name)}</span>`;
+        
+        row.innerHTML = contentHTML;
+
+        if (id !== 'ws_default') {
+            const actionsDiv = document.createElement('div');
+            actionsDiv.className = 'project-actions';
+
+            const editBtn = document.createElement('button');
+            editBtn.className = 'project-action-btn edit-btn';
+            editBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
+            editBtn.onclick = (e) => {
+                e.stopPropagation();
+                openDialog('edit', ws);
+            };
+
+            const delBtn = document.createElement('button');
+            delBtn.className = 'project-action-btn delete-btn';
+            delBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+            delBtn.onclick = async (e) => {
+                e.stopPropagation();
+                if (confirm(`Are you sure you want to delete workspace "${ws.name}"?`)) {
+                    await storage.deleteWorkspace(id);
+                    await api.closeGroup(ws.name);
+                    renderWorkspacesBar();
+                    renderAllProjectsList();
+                }
+            };
+            
+            actionsDiv.appendChild(editBtn);
+            actionsDiv.appendChild(delBtn);
+            row.appendChild(actionsDiv);
+
+            // ИСПРАВЛЕНИЕ: ЖЕСТКИЙ DRAG & DROP ДЛЯ ХРОМИУМА
+            row.addEventListener('dragstart', (e) => {
+                draggedWsMenuId = id;
+                e.dataTransfer.setData('text/plain', id); 
+                e.dataTransfer.effectAllowed = 'move';
+                setTimeout(() => row.style.opacity = '0.5', 0);
+            });
+            
+            row.addEventListener('dragend', () => {
+                draggedWsMenuId = null;
+                row.style.opacity = '1';
+                document.querySelectorAll('.project-row').forEach(r => r.classList.remove('drag-over-ws'));
+            });
+            
+            row.addEventListener('dragenter', (e) => {
+                e.preventDefault(); // КРИТИЧНО: Разрешает дроп
+                if (draggedWsMenuId && draggedWsMenuId !== id && id !== 'ws_default') {
+                    row.classList.add('drag-over-ws');
+                }
+            });
+
+            row.addEventListener('dragover', (e) => {
+                e.preventDefault(); // КРИТИЧНО: Разрешает дроп
+                e.dataTransfer.dropEffect = 'move';
+            });
+            
+            row.addEventListener('dragleave', (e) => {
+                // Избегаем моргания при наведении на текст или кнопки
+                if (!row.contains(e.relatedTarget)) {
+                    row.classList.remove('drag-over-ws');
+                }
+            });
+            
+            row.addEventListener('drop', async (e) => {
+                e.preventDefault();
+                row.classList.remove('drag-over-ws');
+                if (draggedWsMenuId && draggedWsMenuId !== id) {
+                    let { orderedIds } = await getOrderedIds();
+                    const fromIdx = orderedIds.indexOf(draggedWsMenuId);
+                    let toIdx = orderedIds.indexOf(id);
+                    
+                    if (id === 'ws_default') toIdx = 1; // Если бросили на General, кидаем в слот 1
+                    
+                    if (fromIdx !== -1 && toIdx !== -1) {
+                        orderedIds.splice(fromIdx, 1);
+                        const finalToIdx = Math.max(1, toIdx); 
+                        orderedIds.splice(finalToIdx, 0, draggedWsMenuId);
+                        
+                        await saveOrderedIds(orderedIds);
+                        renderAllProjectsList();
+                        renderWorkspacesBar();
+                    }
+                }
+            });
+        }
+        
+        row.onclick = (e) => {
+            if (e.target.closest('.project-actions')) return;
+            switchWorkspace(id);
         };
-        row.appendChild(delBtn);
-        els.allProjectsList.appendChild(row);
+        
+        return row;
+    };
+
+    const generalRow = createRow('ws_default');
+    if (generalRow) els.allProjectsList.appendChild(generalRow);
+
+    const div1 = document.createElement('div');
+    div1.className = 'ws-menu-divider';
+    els.allProjectsList.appendChild(div1);
+
+    for(let i = 1; i <= 3; i++) {
+        if (orderedIds[i]) {
+            const row = createRow(orderedIds[i], i);
+            if(row) els.allProjectsList.appendChild(row);
+        }
+    }
+
+    if (orderedIds.length > 4) {
+        const div2 = document.createElement('div');
+        div2.className = 'ws-menu-divider';
+        els.allProjectsList.appendChild(div2);
+        
+        for(let i = 4; i < orderedIds.length; i++) {
+            const row = createRow(orderedIds[i]);
+            if(row) els.allProjectsList.appendChild(row);
+        }
+    }
+}
+
+function openDialog(mode, workspace = null) {
+    editingWorkspaceId = (mode === 'edit') ? workspace.id : null;
+    els.dialogTitle.innerText = (mode === 'edit') ? 'Rename Workspace' : 'New Workspace';
+    els.dialogSubmitBtn.innerText = (mode === 'edit') ? 'Save' : 'Create';
+    els.newWsName.value = (mode === 'edit') ? workspace.name : '';
+    els.dialog.showModal();
+    setTimeout(() => els.newWsName.focus(), 50);
+}
+
+async function submitDialog() {
+    const name = els.newWsName.value.trim();
+    if (!name) return;
+    
+    if (editingWorkspaceId) {
+        const { workspaces } = await storage.getWorkspaces();
+        const oldName = workspaces[editingWorkspaceId]?.name;
+        
+        await storage.renameWorkspace(editingWorkspaceId, name);
+        if (oldName) {
+            await api.renameGroup(oldName, name); 
+        }
+    } else {
+        await api.enforceGeneralGroup();
+        const newId = await storage.createWorkspace(name);
+        
+        let { orderedIds } = await getOrderedIds();
+        orderedIds = orderedIds.filter(id => id !== newId);
+        orderedIds.splice(1, 0, newId);
+        await saveOrderedIds(orderedIds);
+
+        await api.activateWorkspace(name);
+        await storage.setActiveWorkspace(newId);
+    }
+    
+    els.dialog.close();
+    renderWorkspacesBar();
+    renderTabs(true);
+}
+
+async function renderWorkspacesBar() {
+    const { workspaces, activeId } = await storage.getWorkspaces();
+    let { orderedIds } = await getOrderedIds();
+    
+    els.wsBar.innerHTML = '';
+    let list = orderedIds.slice(0, 4);
+
+    list.forEach(id => {
+        const ws = workspaces[id]; if (!ws) return;
+        const btn = document.createElement('button');
+        btn.className = `ws-btn ${id === activeId ? 'active' : ''}`;
+        const span = document.createElement('span'); 
+        span.innerText = ws.name;
+        btn.appendChild(span);
+        
+        btn.onclick = () => switchWorkspace(id);
+        
+        if (id !== activeId) {
+            btn.ondragover = (e) => { e.preventDefault(); btn.classList.add('drag-over'); };
+            btn.ondragleave = () => btn.classList.remove('drag-over');
+            btn.ondrop = async (e) => { 
+                e.preventDefault(); 
+                btn.classList.remove('drag-over'); 
+                if(draggingTabId) await api.addTabToGroupByName(Number(draggingTabId), ws.name);
+            };
+        }
+        els.wsBar.appendChild(btn);
     });
 }
 
 function setupEventListeners() {
-    els.navBack?.addEventListener('click', async () => { 
-        const [tab] = await chrome.tabs.query({active:true, currentWindow:true}); 
-        if(tab) chrome.tabs.goBack(tab.id); 
+    els.navBack?.addEventListener('click', async () => {
+        const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
+        if(tab) chrome.tabs.goBack(tab.id);
     });
-    els.navForward?.addEventListener('click', async () => { 
-        const [tab] = await chrome.tabs.query({active:true, currentWindow:true}); 
-        if(tab) chrome.tabs.goForward(tab.id); 
+    els.navForward?.addEventListener('click', async () => {
+        const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
+        if(tab) chrome.tabs.goForward(tab.id);
     });
-    els.navReload?.addEventListener('click', async () => { 
-        const [tab] = await chrome.tabs.query({active:true, currentWindow:true}); 
-        if(tab) chrome.tabs.reload(tab.id); 
+    els.navReload?.addEventListener('click', async () => {
+        const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
+        if(tab) chrome.tabs.reload(tab.id);
     });
-    
+
     els.omnibox?.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
             let url = els.omnibox.value;
@@ -577,7 +987,7 @@ function setupEventListeners() {
     });
     els.closeProjectsBtn?.addEventListener('click', (e) => { e.stopPropagation(); els.projectsDropdown.classList.remove('open'); });
     els.closeSettingsBtn?.addEventListener('click', (e) => { e.stopPropagation(); els.settingsMenu.classList.remove('open'); });
-    
+
     document.addEventListener('click', (e) => {
         if (els.settingsMenu && !els.settingsMenu.contains(e.target) && e.target !== els.settingsBtn) els.settingsMenu.classList.remove('open');
         if (els.projectsDropdown && !els.projectsDropdown.contains(e.target) && e.target !== els.allWsBtn) els.projectsDropdown.classList.remove('open');
@@ -587,7 +997,7 @@ function setupEventListeners() {
         const isFull = await api.toggleZenMode(); 
         updateZenIcon(isFull); 
     });
-    
+
     const savedTheme = localStorage.getItem('theme') || 'light';
     els.html.className = `${savedTheme}-theme`;
     const radio = document.querySelector(`input[name="themes"][value="${savedTheme}"]`);
@@ -596,7 +1006,7 @@ function setupEventListeners() {
         els.html.className = `${r.value}-theme`; 
         localStorage.setItem('theme', r.value); 
     }));
-    
+
     els.projectSearch?.addEventListener('input', renderAllProjectsList);
     els.searchInput?.addEventListener('input', handleSearchInput);
 
@@ -625,275 +1035,172 @@ function setupEventListeners() {
     );
     els.bulkMoveBtn?.addEventListener('mouseenter', setupBulkMoveDropdown);
     els.bulkCopyBtn?.addEventListener('mouseenter', setupBulkMoveDropdown);
-}
 
-function openDialog(mode, workspace = null) {
-    editingWorkspaceId = (mode === 'edit') ? workspace.id : null;
-    els.dialogTitle.innerText = (mode === 'edit') ? 'Rename Workspace' : 'New Workspace';
-    els.dialogSubmitBtn.innerText = (mode === 'edit') ? 'Save' : 'Create';
-    els.newWsName.value = (mode === 'edit') ? workspace.name : '';
-    els.dialog.showModal();
-    setTimeout(() => els.newWsName.focus(), 50);
-}
-
-async function submitDialog() {
-    const name = escapeHtml(els.newWsName.value.trim());
-    if (!name) return;
-    if (editingWorkspaceId) {
-        await storage.renameWorkspace(editingWorkspaceId, name);
-    } else {
-        await api.groupAllUngroupedTabs(); 
-        const newId = await storage.createWorkspace(name);
-        const newGroupId = await api.createNewProjectGroup(name);
-        await api.focusOnGroup(newGroupId);
-        await storage.setActiveWorkspace(newId);
-    }
-    els.dialog.close(); 
-    renderWorkspacesBar();
-    renderTabs();
-}
-
-async function renderWorkspacesBar() {
-    const { workspaces, activeId, visibleIds } = await storage.getWorkspaces();
-    els.wsBar.innerHTML = '';
-    let list = [...visibleIds];
-    if (!list.includes(activeId)) list = [activeId, ...list.slice(0, 3)]; 
-
-    list.forEach(id => {
-        const ws = workspaces[id]; if (!ws) return;
-        const btn = document.createElement('button');
-        btn.className = `ws-btn ${id === activeId ? 'active' : ''}`;
-        const span = document.createElement('span'); 
-        span.innerText = escapeHtml(ws.name);
-        btn.appendChild(span);
-        
-        if (id === activeId && id !== 'ws_default') {
-            const editIcon = document.createElement('div');
-            editIcon.className = 'edit-ws-icon';
-            editIcon.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
-            editIcon.onclick = (e) => { e.stopPropagation(); openDialog('edit', ws); };
-            btn.appendChild(editIcon);
-        }
-        btn.onclick = () => switchWorkspace(id);
-        
-        if (id !== activeId) {
-            btn.ondragover = (e) => { e.preventDefault(); btn.classList.add('drag-over'); };
-            btn.ondragleave = () => btn.classList.remove('drag-over');
-            btn.ondrop = async (e) => { 
-                e.preventDefault(); 
-                btn.classList.remove('drag-over'); 
-                if(draggingTabId) await api.addTabToGroupByName(Number(draggingTabId), ws.name);
-            };
-        }
-        els.wsBar.appendChild(btn);
-    });
-}
-
-function createTabElement(tab, index, lastIndex) {
-    const div = document.createElement('div');
-    div.className = `tab-card ${tab.isActive ? 'active' : ''}`;
-    div.draggable = true;
-    div.dataset.id = tab.id;
-    
-    // --- DRAG HANDLER ---
-    div.ondragstart = (e) => { 
-        // 1. БЛОКИРУЕМ ПЕРЕТАСКИВАНИЕ СТРОКИ, ЕСЛИ КЛИКНУЛИ ПО ЗОНЕ ЧЕКБОКСА ИЛИ КНОПКЕ "+"
-        if(e.target.closest('.tab-check-wrapper') || e.target.closest('.add-tab-btn')) {
-            e.preventDefault(); 
-            return;
-        }
-
-        // Если чекбокс отмечен - драгаем группу, иначе - только этот таб
-        const checkbox = div.querySelector('.tab-check-box');
-        if (checkbox?.checked) {
-            const ids = Array.from(document.querySelectorAll('.tab-check-box:checked')).map(cb => cb.closest('.tab-card').dataset.id);
-            e.dataTransfer.setData('text/plain', JSON.stringify(ids));
-        } else {
-            e.dataTransfer.setData('text/plain', JSON.stringify([tab.id]));
-        }
-        startDrag(tab.id, false);
-        div.style.opacity = '0.4';
-        e.dataTransfer.effectAllowed = 'move';
-    };
-    
-    div.ondragend = () => endDrag();
-    
-    div.ondragover = (e) => { 
-        e.preventDefault(); 
-        if(draggingTabId === tab.id) return;
-        const rect = div.getBoundingClientRect(); 
-        div.classList.remove('sort-target-top', 'sort-target-bottom');
-        if (e.clientY < rect.top + rect.height/2) div.classList.add('sort-target-top');
-        else div.classList.add('sort-target-bottom');
-    };
-    
-    div.ondragleave = () => div.classList.remove('sort-target-top', 'sort-target-bottom');
-    
-    div.ondrop = async (e) => { 
-        e.preventDefault(); 
-        div.classList.remove('sort-target-top', 'sort-target-bottom'); 
-        
-        if (draggingTabPinned) return; 
-
-        const rect = div.getBoundingClientRect(); 
-        const newIndex = e.clientY >= rect.top + rect.height/2 ? tab.index + 1 : tab.index; 
-        
+    els.fixedNewTabBtn?.addEventListener('click', async () => {
+        isSwitchingProgrammatically = true; 
         try {
-            const data = e.dataTransfer.getData('text/plain');
-            if (data) {
-                const ids = JSON.parse(data);
-                if(Array.isArray(ids) && ids.length) await api.moveTab(ids.map(Number), newIndex);
+            const { workspaces, activeId } = await storage.getWorkspaces();
+            const activeWsName = workspaces[activeId]?.name || "General";
+            let group = await api.findGroup(activeWsName);
+            
+            const newTab = await chrome.tabs.create({ active: true });
+            if (group) {
+                await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+            } else {
+                const newGroupId = await chrome.tabs.group({ tabIds: newTab.id });
+                await chrome.tabGroups.update(newGroupId, { title: activeWsName });
             }
-        } catch(err) {}
-    };
-
-    // --- CHECKBOX LOGIC (PAINTBRUSH) ---
-    const checkWrapper = document.createElement('div');
-    checkWrapper.className = 'tab-check-wrapper';
-    
-    if (index < 10) {
-        const badge = document.createElement('kbd');
-        badge.className = 'shortcut-badge';
-        badge.innerText = index === 9 ? '0' : (index + 1);
-        div.appendChild(badge);
-    }
-
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.className = 'tab-check-box';
-    checkbox.setAttribute('aria-label', 'Select tab');
-    // ВАЖНО: Делаем чекбокс "невидимым" для мыши, чтобы все клики ловил wrapper
-    checkbox.style.pointerEvents = 'none'; 
-    
-    checkWrapper.appendChild(checkbox);
-
-    // Логика "рисования" выделения
-    checkWrapper.addEventListener('mousedown', (e) => {
-        // Останавливаем всплытие, чтобы не активировался таб (клик по строке)
-        e.stopPropagation(); 
-        e.preventDefault(); // Запрещаем нативное выделение текста/картинок
-
-        isSelectionDragging = true;
-        const newState = !checkbox.checked;
-        checkbox.checked = newState;
-        selectionTargetState = newState;
-        updateManagementPanel();
-    });
-
-    checkWrapper.addEventListener('mouseenter', () => {
-        if (isSelectionDragging) {
-            checkbox.checked = selectionTargetState;
-            updateManagementPanel();
+        } finally {
+            setTimeout(() => { isSwitchingProgrammatically = false; }, 500);
         }
     });
-
-    // Обработчик простого клика (на всякий случай, если mousedown не сработал как надо)
-    checkWrapper.addEventListener('click', (e) => e.stopPropagation());
-    
-    div.appendChild(checkWrapper);
-    
-    const divider = document.createElement('div');
-    divider.className = 'tab-divider';
-    div.appendChild(divider);
-
-    // --- CONTENT ---
-    const isMuted = tab.mutedInfo?.muted ?? false;
-    const hasAudio = tab.audible || isMuted;
-    
-    let audioHtml = '';
-    if (hasAudio) {
-        const audioIcon = isMuted 
-            ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>` 
-            : `<div class="audio-wave"><div class="audio-bar"></div><div class="audio-bar"></div><div class="audio-bar"></div></div>`;
-        audioHtml = `<div class="audio-indicator ${isMuted ? 'muted' : ''}" data-tooltip="${isMuted ? 'Unmute' : 'Mute'}" data-tooltip-pos="up">${audioIcon}</div>`;
-    }
-
-    const timeAgoText = tab.isActive ? 'Active now' : formatTimeAgo(tab.lastAccessed);
-
-    const contentHtml = `
-        <img src="${getFaviconUrl(tab.url)}" class="tab-icon" alt="">
-        <div class="tab-info">
-            <div class="tab-title">${escapeHtml(tab.title)}</div>
-            <div class="tab-meta">${escapeHtml(timeAgoText)}</div>
-        </div>
-        <div class="tab-actions">
-            <button class="tab-action-btn pin-btn" data-tooltip="Pin tab" data-tooltip-pos="up" aria-label="Pin tab">
-                <svg viewBox="0 0 24 24" fill="currentColor" stroke="none">
-                    <path d="M16 12V4H17V2H7V4H8V12L6 14V16H11.2V22H12.8V16H18V14L16 12Z"/>
-                </svg>
-            </button>
-            <button class="tab-action-btn incognito-btn" data-tooltip="Open in Incognito" data-tooltip-pos="up" aria-label="Open incognito">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M12 5c-7 0 -10 7 -10 7s3 7 10 7s10 -7 10 -7s-3 -7 -10 -7z"></path>
-                    <circle cx="12" cy="12" r="3"></circle>
-                    <path d="M3 3l18 18"></path>
-                </svg>
-            </button>
-            <button class="tab-action-btn duplicate-btn" data-tooltip="Duplicate" data-tooltip-pos="up" aria-label="Duplicate tab">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                </svg>
-            </button>
-            ${audioHtml}
-            <button class="tab-action-btn close-btn" data-tooltip="Close" data-tooltip-pos="up" aria-label="Close tab">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="18" y1="6" x2="6" y2="18"></line>
-                    <line x1="6" y1="6" x2="18" y2="18"></line>
-                </svg>
-            </button>
-        </div>
-    `;
-    
-    div.insertAdjacentHTML('beforeend', contentHtml);
-
-    if (tab.isActive) {
-        const btnTop = document.createElement('div');
-        btnTop.className = 'add-tab-btn top';
-        btnTop.onclick = (e) => { e.stopPropagation(); api.createTabAtIndex(tab.index, true, tab.id); };
-        
-        let btnBottom = null;
-        if (index !== lastIndex) {
-            btnBottom = document.createElement('div');
-            btnBottom.className = 'add-tab-btn bottom';
-            btnBottom.onclick = (e) => { e.stopPropagation(); api.createTabAtIndex(tab.index + 1, true, tab.id); };
-        }
-
-        const showTop = () => { btnTop.classList.add('visible'); btnBottom?.classList.remove('visible'); div.classList.add('gradient-top'); div.classList.remove('gradient-bottom'); };
-        const showBottom = () => { if(btnBottom) { btnTop.classList.remove('visible'); btnBottom.classList.add('visible'); div.classList.remove('gradient-top'); div.classList.add('gradient-bottom'); }};
-        const clearAll = () => { btnTop.classList.remove('visible'); btnBottom?.classList.remove('visible'); div.classList.remove('gradient-top', 'gradient-bottom'); };
-
-        div.onmousemove = (e) => {
-            if (isSelectionDragging) return;
-            const rect = div.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            if (x < 60) { y < rect.height / 2 ? showTop() : showBottom(); } else { clearAll(); }
-        };
-        
-        btnTop.onmouseenter = showTop;
-        btnBottom?.addEventListener('mouseenter', showBottom);
-        div.onmouseleave = clearAll;
-
-        div.appendChild(btnTop);
-        if(btnBottom) div.appendChild(btnBottom);
-    }
-    
-    div.onclick = (e) => {
-        if (e.target.closest('.tab-check-wrapper, .add-tab-btn, .tab-action-btn, .audio-indicator')) return;
-        api.activateTab(tab.id);
-    };
-
-    div.querySelector('.pin-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.togglePinTab(tab.id, tab.isPinned); });
-    div.querySelector('.incognito-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.openInIncognito([tab.id]); });
-    div.querySelector('.duplicate-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.duplicateTab(tab.id); });
-    div.querySelector('.audio-indicator')?.addEventListener('click', (e) => { e.stopPropagation(); api.toggleMuteTab(tab.id, isMuted); });
-    div.querySelector('.close-btn')?.addEventListener('click', (e) => { 
-        e.stopPropagation(); 
-        div.classList.add('closing');
-        div.addEventListener('transitionend', () => { api.closeTab(tab.id); }, { once: true });
-        setTimeout(() => api.closeTab(tab.id), 200);
-    });
-    
-    return div;
 }
+
+document.addEventListener('DOMContentLoaded', async () => {
+    setupEventListeners();
+    setupTabsListDropHandlers();
+
+    const savedManageMode = localStorage.getItem('manageMode');
+    if (savedManageMode === 'on') {
+        if(els.masterToggle) els.masterToggle.checked = true;
+        if(els.managementPanel) els.managementPanel.classList.add('visible');
+    } else {
+        document.body.classList.add('manage-mode-off');
+    }
+
+    try {
+        await hardSyncWithChrome(); 
+        
+        await renderWorkspacesBar();
+        await renderTabs(true);
+        updateOmnibox();
+
+        syncGeneralOnLoad().then(() => {
+            renderTabs(true);
+        });
+        
+        startTimeUpdates();
+
+        if(els.searchInput) els.searchInput.focus();
+        
+        const debouncedRender = debounce(() => {
+            if (!isDragging) {
+                renderTabs(true);
+                updateOmnibox();
+            }
+        }, 300);
+        
+        api.subscribeToUpdates(debouncedRender);
+        
+        api.subscribeToActivation(async (activeInfo) => {
+            updateOmnibox();
+            if (isSwitchingProgrammatically) return;
+            
+            try {
+                const tab = await chrome.tabs.get(activeInfo.tabId);
+                const { workspaces, activeId } = await storage.getWorkspaces();
+                let targetWsId = 'ws_default'; 
+                
+                if (tab.groupId !== -1) {
+                    const group = await chrome.tabGroups.get(tab.groupId);
+                    const groupName = (group.title || '').trim().toLowerCase();
+                    const matchedWs = Object.values(workspaces).find(ws => ws.name.trim().toLowerCase() === groupName);
+                    if (matchedWs) targetWsId = matchedWs.id;
+                } else if (!tab.pinned) {
+                    isSwitchingProgrammatically = true;
+                    targetWsId = activeId;
+                    const activeWsName = workspaces[activeId]?.name || "General";
+                    let group = await api.findGroup(activeWsName);
+                    
+                    if (group) {
+                        await chrome.tabs.group({ tabIds: tab.id, groupId: group.id });
+                    } else {
+                        const newGroupId = await chrome.tabs.group({ tabIds: tab.id });
+                        await chrome.tabGroups.update(newGroupId, { title: activeWsName });
+                    }
+                    setTimeout(() => { isSwitchingProgrammatically = false; }, 300);
+                }
+                
+                if (targetWsId !== activeId) {
+                    await storage.setActiveWorkspace(targetWsId);
+                    renderWorkspacesBar();
+                    renderTabs(true);
+                    if (tab.groupId !== -1) await api.focusOnGroup(tab.groupId);
+                } else {
+                    if (!isDragging) {
+                        if (previousActiveTabId !== null && previousActiveTabId !== activeInfo.tabId) {
+                            const prevTabData = currentTabs.find(t => t.id === previousActiveTabId);
+                            if (prevTabData) {
+                                prevTabData.lastAccessed = Date.now();
+                                prevTabData.isActive = false;
+                            }
+                            const prevCard = document.querySelector(`[data-id="${previousActiveTabId}"]`);
+                            if (prevCard) {
+                                prevCard.classList.remove('active');
+                                const metaEl = prevCard.querySelector('.tab-meta');
+                                if (metaEl) metaEl.textContent = 'Just now';
+                            }
+                        }
+                        
+                        const newTabData = currentTabs.find(t => t.id === activeInfo.tabId);
+                        if (newTabData) {
+                            newTabData.isActive = true;
+                        }
+                        const newCard = document.querySelector(`[data-id="${activeInfo.tabId}"]`);
+                        if (newCard) {
+                            newCard.classList.add('active');
+                            const metaEl = newCard.querySelector('.tab-meta');
+                            if (metaEl) metaEl.textContent = 'Active now';
+                            newCard.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                        }
+                        
+                        previousActiveTabId = activeInfo.tabId;
+                    }
+                }
+            } catch(e) {}
+        });
+
+        chrome.tabs.onCreated.addListener((newTab) => {
+            if (chrome.runtime.lastError) return;
+            if (!isDragging) {
+                requestAnimationFrame(() => {
+                    renderTabs(true).then(() => {
+                        setTimeout(() => scrollToTabById(newTab.id), 100);
+                    });
+                });
+            }
+        });
+
+        if(els.restoreBtn) {
+            els.restoreBtn.addEventListener('click', () => {
+                try { if (chrome.sessions?.restore) chrome.sessions.restore(); } catch(e) { console.error(e); }
+            });
+        }
+
+        document.addEventListener('keydown', async (e) => {
+            if (document.activeElement?.tagName === 'INPUT') return;
+            
+            if (e.key >= '0' && e.key <= '9' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                e.preventDefault(); 
+                const num = parseInt(e.key);
+                const index = num === 0 ? 9 : num - 1; 
+                const cards = Array.from(document.querySelectorAll('.tab-card'));
+                
+                if (cards[index]) {
+                    const tabId = Number(cards[index].dataset.id);
+                    await api.activateTab(tabId);
+                    cards[index].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                }
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isSelectionDragging = false;
+            if (isDragging) endDrag();
+        });
+    } catch (e) { console.error("Init failed:", e); }
+});
+
+window.addEventListener('beforeunload', () => {
+    stopTimeUpdates();
+});
