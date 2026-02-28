@@ -55,7 +55,6 @@ let dragTimeout = null;
 let currentTabs = [];
 let timeUpdateInterval = null;
 let previousActiveTabId = null;
-let draggedWsMenuId = null; 
 
 function escapeHtml(str) {
     if (!str) return '';
@@ -650,7 +649,6 @@ async function setupBulkMoveDropdown() {
     });
 }
 
-// Строгий порядок воркспейсов: General всегда 0
 async function getOrderedIds() {
     const { workspaces, visibleIds } = await storage.getWorkspaces();
     let allIds = Object.keys(workspaces);
@@ -737,15 +735,9 @@ async function renderAllProjectsList() {
         const row = document.createElement('div');
         row.className = `project-row ${id === activeId ? 'active' : ''}`;
         
-        if (id !== 'ws_default') {
-            row.setAttribute('draggable', 'true');
-        }
-        
         let contentHTML = ``;
         if (slotIndex !== null) {
             contentHTML += `<kbd class="shortcut-badge" style="position:relative; top:auto; left:auto; margin-right:8px; flex-shrink:0;">${slotIndex}</kbd>`;
-        } else if (id !== 'ws_default') {
-            contentHTML += `<div style="width:14px; margin-right:8px; flex-shrink:0;"></div>`; 
         } else {
             contentHTML += `<div style="width:14px; margin-right:8px; flex-shrink:0;"></div>`; 
         }
@@ -782,66 +774,91 @@ async function renderAllProjectsList() {
             actionsDiv.appendChild(delBtn);
             row.appendChild(actionsDiv);
 
-            // ИСПРАВЛЕНИЕ: ЖЕСТКИЙ DRAG & DROP ДЛЯ ХРОМИУМА
-            row.addEventListener('dragstart', (e) => {
-                draggedWsMenuId = id;
-                e.dataTransfer.setData('text/plain', id); 
+            // ИДЕНТИЧНАЯ ЛОГИКА D&D ИЗ ВКЛАДОК
+            row.draggable = true;
+            row.ondragstart = (e) => {
+                if (e.target.closest('.project-actions')) {
+                    e.preventDefault();
+                    return;
+                }
+                e.dataTransfer.setData('text/plain', id);
                 e.dataTransfer.effectAllowed = 'move';
-                setTimeout(() => row.style.opacity = '0.5', 0);
-            });
-            
-            row.addEventListener('dragend', () => {
-                draggedWsMenuId = null;
-                row.style.opacity = '1';
-                document.querySelectorAll('.project-row').forEach(r => r.classList.remove('drag-over-ws'));
-            });
-            
-            row.addEventListener('dragenter', (e) => {
-                e.preventDefault(); // КРИТИЧНО: Разрешает дроп
-                if (draggedWsMenuId && draggedWsMenuId !== id && id !== 'ws_default') {
-                    row.classList.add('drag-over-ws');
-                }
-            });
+                row.classList.add('dragging');
+            };
 
-            row.addEventListener('dragover', (e) => {
-                e.preventDefault(); // КРИТИЧНО: Разрешает дроп
-                e.dataTransfer.dropEffect = 'move';
-            });
-            
-            row.addEventListener('dragleave', (e) => {
-                // Избегаем моргания при наведении на текст или кнопки
-                if (!row.contains(e.relatedTarget)) {
-                    row.classList.remove('drag-over-ws');
-                }
-            });
-            
-            row.addEventListener('drop', async (e) => {
+            row.ondragend = () => {
+                row.classList.remove('dragging');
+                document.querySelectorAll('.project-row').forEach(r => {
+                    r.classList.remove('sort-target-top', 'sort-target-bottom');
+                });
+            };
+
+            row.ondragover = (e) => {
+                e.preventDefault(); 
+                const draggedId = e.dataTransfer.types.includes('text/plain');
+                if (!draggedId) return;
+                
+                const rect = row.getBoundingClientRect();
+                row.classList.remove('sort-target-top', 'sort-target-bottom');
+                if (e.clientY < rect.top + rect.height / 2) row.classList.add('sort-target-top');
+                else row.classList.add('sort-target-bottom');
+            };
+
+            row.ondragleave = () => {
+                row.classList.remove('sort-target-top', 'sort-target-bottom');
+            };
+
+            row.ondrop = async (e) => {
                 e.preventDefault();
-                row.classList.remove('drag-over-ws');
-                if (draggedWsMenuId && draggedWsMenuId !== id) {
-                    let { orderedIds } = await getOrderedIds();
-                    const fromIdx = orderedIds.indexOf(draggedWsMenuId);
-                    let toIdx = orderedIds.indexOf(id);
+                row.classList.remove('sort-target-top', 'sort-target-bottom');
+                const sourceId = e.dataTransfer.getData('text/plain');
+                
+                if (!sourceId || sourceId === id || sourceId === 'ws_default') return;
+
+                const rect = row.getBoundingClientRect();
+                const insertAfter = e.clientY >= rect.top + rect.height / 2;
+
+                let { orderedIds } = await getOrderedIds();
+                const fromIdx = orderedIds.indexOf(sourceId);
+                let toIdx = orderedIds.indexOf(id);
+
+                if (fromIdx !== -1 && toIdx !== -1) {
+                    orderedIds.splice(fromIdx, 1);
+                    toIdx = orderedIds.indexOf(id); 
+                    if (insertAfter) toIdx++;
                     
-                    if (id === 'ws_default') toIdx = 1; // Если бросили на General, кидаем в слот 1
+                    const finalToIdx = Math.max(1, toIdx); 
+                    orderedIds.splice(finalToIdx, 0, sourceId);
                     
-                    if (fromIdx !== -1 && toIdx !== -1) {
-                        orderedIds.splice(fromIdx, 1);
-                        const finalToIdx = Math.max(1, toIdx); 
-                        orderedIds.splice(finalToIdx, 0, draggedWsMenuId);
-                        
-                        await saveOrderedIds(orderedIds);
-                        renderAllProjectsList();
-                        renderWorkspacesBar();
-                    }
+                    await saveOrderedIds(orderedIds);
+                    await renderAllProjectsList();
+                    await renderWorkspacesBar();
                 }
-            });
+            };
+        } else {
+            row.ondragover = (e) => {
+                e.preventDefault();
+                const draggedId = e.dataTransfer.types.includes('text/plain');
+                if (draggedId) row.classList.add('sort-target-bottom');
+            };
+            row.ondragleave = () => row.classList.remove('sort-target-bottom');
+            row.ondrop = async (e) => {
+                e.preventDefault();
+                row.classList.remove('sort-target-bottom');
+                const sourceId = e.dataTransfer.getData('text/plain');
+                if (!sourceId || sourceId === 'ws_default') return;
+
+                let { orderedIds } = await getOrderedIds();
+                const fromIdx = orderedIds.indexOf(sourceId);
+                if (fromIdx !== -1) {
+                    orderedIds.splice(fromIdx, 1);
+                    orderedIds.splice(1, 0, sourceId); 
+                    await saveOrderedIds(orderedIds);
+                    await renderAllProjectsList();
+                    await renderWorkspacesBar();
+                }
+            };
         }
-        
-        row.onclick = (e) => {
-            if (e.target.closest('.project-actions')) return;
-            switchWorkspace(id);
-        };
         
         return row;
     };
@@ -1091,6 +1108,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         }, 300);
         
         api.subscribeToUpdates(debouncedRender);
+
+        // Двусторонняя синхронизация: если пользователь переименовал группу прямо в Chrome
+        if (chrome.tabGroups) {
+            chrome.tabGroups.onUpdated.addListener(async (group) => {
+                if (!group.title) return;
+                const { workspaces, activeId } = await storage.getWorkspaces();
+                if (activeId && workspaces[activeId]) {
+                    const tabsInGroup = await chrome.tabs.query({ groupId: group.id, active: true, currentWindow: true });
+                    if (tabsInGroup.length > 0) {
+                        const newName = group.title.trim();
+                        if (workspaces[activeId].name !== newName && newName.toLowerCase() !== 'general') {
+                            await storage.renameWorkspace(activeId, newName);
+                            renderWorkspacesBar();
+                            renderAllProjectsList();
+                        }
+                    }
+                }
+            });
+        }
         
         api.subscribeToActivation(async (activeInfo) => {
             updateOmnibox();

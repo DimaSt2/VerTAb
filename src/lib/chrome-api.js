@@ -142,7 +142,6 @@ export const findGroup = async (title) => {
     return groups.find(g => (g.title || '').trim().toLowerCase() === cleanTitle);
 };
 
-// Жесткое правило: переименовываем воркспейс -> переименовываем и группу в браузере
 export const renameGroup = async (oldName, newName) => {
     const group = await findGroup(oldName);
     if (group) {
@@ -154,16 +153,20 @@ export const enforceGeneralGroup = async () => {
     const tabs = await chrome.tabs.query({ currentWindow: true, pinned: false });
     const ungroupedIds = tabs.filter(t => t.groupId === -1).map(t => t.id);
     
+    let group = await findGroup("General");
+    let groupId = group ? group.id : null;
+
     if (ungroupedIds.length > 0) {
-        let group = await findGroup("General");
-        let groupId;
-        if (group) {
-            groupId = group.id;
+        if (groupId) {
             await chrome.tabs.group({ tabIds: ungroupedIds, groupId });
         } else {
             groupId = await chrome.tabs.group({ tabIds: ungroupedIds });
-            await chrome.tabGroups.update(groupId, { title: "General", color: "grey" });
         }
+    }
+    
+    // ПРИНУДИТЕЛЬНО задаем имя и цвет, чтобы Chrome 100% отрисовал их на панели при запуске
+    if (groupId) {
+        await chrome.tabGroups.update(groupId, { title: "General", color: "grey" });
     }
 };
 

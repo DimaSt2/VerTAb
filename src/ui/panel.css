@@ -86,7 +86,7 @@ body {
     line-height: 1.5;
     margin: 0;
     height: 100vh;
-    width: 360px; /* Фиксируем ширину для идеального отображения */
+    width: 360px;
     display: flex;
     flex-direction: column;
     background-color: var(--c-bg-primary);
@@ -219,20 +219,18 @@ body {
     align-items: center; 
 }
 
-/* 
- * ИСПРАВЛЕНИЕ: Спокойный дизайн активного воркспейса, 
- * убрана жирность, убрано свечение, шрифт 12px (с отступами влезает General)
- */
+/* ИСПРАВЛЕНИЕ: Спокойный дизайн, убрано свечение и жирность */
 .ws-btn {
     flex: 1 1 0; 
     min-width: 0; 
-    padding: 6px 4px; /* Меньше отступ по бокам чтобы текст вмещался */
-    border-radius: 6px; /* Более современный скругленный вид вместо овала */
+    padding: 5px 6px;
+    border-radius: 6px; 
     cursor: pointer; 
-    font-size: 12px; 
-    font-weight: 500; /* Не жирный */
+    font-size: 11.5px; 
+    font-weight: 400; /* Не жирный */
     color: var(--c-text-secondary); 
-    border: 1px solid transparent; transition: all 0.15s;
+    border: 1px solid transparent; 
+    transition: all 0.15s;
     display: flex; align-items: center; justify-content: center; gap: 4px; user-select: none;
     background: var(--c-bg-secondary);
 }
@@ -243,9 +241,9 @@ body {
 }
 .ws-btn.active {
     color: var(--c-accent); 
-    background: var(--c-bg-primary); 
-    box-shadow: inset 0 0 0 1px var(--c-accent); /* Аккуратная внутренняя обводка вместо тени */
-    font-weight: 500;
+    background: rgba(79, 70, 229, 0.1); /* Легкий голубоватый фон вместо ядовитого */
+    box-shadow: inset 0 0 0 1px var(--c-accent); /* Тонкая рамка */
+    font-weight: 500; /* Чуть-чуть выделяем, но не 700 */
 }
 .ws-btn.drag-over { border: 1px dashed var(--c-accent); opacity: 0.7; }
 
@@ -603,11 +601,15 @@ body.manage-mode-off .tab-card::before, body.manage-mode-off .tab-card::after { 
     display: flex; justify-content: space-between; align-items: center; 
     padding: 6px 10px; border-radius: 6px; cursor: pointer; 
     font-size: 13px; color: var(--c-text-primary); margin-bottom: 2px; 
-    transition: background 0.1s, box-shadow 0.1s;
+    background-color: transparent; border: 1px solid transparent;
+    transition: background 0.1s;
 }
+
+.project-row.sort-target-top { border-top: 2px solid var(--c-accent) !important; }
+.project-row.sort-target-bottom { border-bottom: 2px solid var(--c-accent) !important; }
+
 .project-row:hover { background-color: var(--c-bg-secondary); }
 .project-row.active { background-color: var(--c-bg-secondary); color: var(--c-accent); font-weight: 500; }
-.project-row.drag-over-ws { background-color: var(--c-bg-tab-active); box-shadow: inset 0 0 0 1px var(--c-accent); }
 
 .project-actions {
     display: flex;
