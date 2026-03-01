@@ -55,6 +55,7 @@ let isDragging = false;
 let currentTabs = [];
 let timeUpdateInterval = null;
 let previousActiveTabId = null;
+let currentWsStartTime = Date.now(); // Время переключения в текущий Workspace для обнуления истории Restore
 
 function escapeHtml(str) {
     if (!str) return '';
@@ -181,7 +182,32 @@ function setupTabsListDropHandlers() {
         if (draggingTabPinned && draggingTabId) {
             e.preventDefault();
             els.tabsList.classList.remove('drag-over-pinned');
-            await chrome.tabs.update(Number(draggingTabId), { pinned: false });
+            const tabId = Number(draggingTabId);
+            
+            try {
+                await chrome.tabs.update(tabId, { pinned: false });
+                
+                const { workspaces, activeId } = await storage.getWorkspaces();
+                const wsName = activeId === 'ws_default' ? 'General' : workspaces[activeId]?.name;
+                
+                if (wsName) {
+                    let group = await api.findGroup(wsName);
+                    if (group) {
+                        await chrome.tabs.group({ tabIds: tabId, groupId: group.id });
+                    } else if (activeId !== 'ws_default') {
+                        const newGroupId = await chrome.tabs.group({ tabIds: tabId });
+                        await chrome.tabGroups.update(newGroupId, { title: wsName });
+                    } else {
+                        await chrome.tabs.ungroup(tabId);
+                    }
+                }
+
+                isDragging = false;
+                renderTabs(true);
+            } catch(err) {
+                isDragging = false;
+                console.error("Drop unpin error:", err);
+            }
         }
     };
 
@@ -210,7 +236,6 @@ function createTabElement(tab, index) {
     div.dataset.id = tab.id;
     div.dataset.url = tab.url;
 
-    // --- БАЗОВЫЙ DRAG AND DROP ---
     div.ondragstart = (e) => { 
         if(e.target.closest('.tab-check-wrapper, .add-tab-btn, .tab-action-btn, .audio-indicator')) {
             e.preventDefault(); 
@@ -224,7 +249,6 @@ function createTabElement(tab, index) {
         e.dataTransfer.setData('text/plain', tab.id.toString());
         e.dataTransfer.effectAllowed = 'move';
         
-        // Визуальный эффект при перетаскивании
         setTimeout(() => div.classList.add('dragging'), 0);
     };
 
@@ -238,10 +262,11 @@ function createTabElement(tab, index) {
     };
 
     div.ondragover = (e) => { 
-        e.preventDefault(); // Обязательно, чтобы сработал ondrop
+        if (draggingTabPinned) return; 
+        e.preventDefault(); 
         e.dataTransfer.dropEffect = 'move';
         
-        if (!draggingTabId || draggingTabId === tab.id || draggingTabPinned) return;
+        if (!draggingTabId || draggingTabId === tab.id) return;
         
         const rect = div.getBoundingClientRect(); 
         div.classList.remove('sort-target-top', 'sort-target-bottom');
@@ -252,11 +277,11 @@ function createTabElement(tab, index) {
     div.ondragleave = () => div.classList.remove('sort-target-top', 'sort-target-bottom');
 
     div.ondrop = async (e) => { 
+        if (draggingTabPinned) return; 
         e.preventDefault(); 
         e.stopPropagation();
         
         div.classList.remove('sort-target-top', 'sort-target-bottom'); 
-        if (draggingTabPinned) return; 
 
         try {
             const sourceId = Number(e.dataTransfer.getData('text/plain'));
@@ -265,15 +290,21 @@ function createTabElement(tab, index) {
             const rect = div.getBoundingClientRect(); 
             const newIndex = e.clientY >= rect.top + rect.height/2 ? tab.index + 1 : tab.index; 
             
-            // Снимаем блокировку UI ПЕРЕД перемещением вкладки в браузере
-            isDragging = false; 
             await chrome.tabs.move(sourceId, { index: newIndex });
             
-            // Форсируем обновление списка
+            if (tab.groupId && tab.groupId !== -1) {
+                await chrome.tabs.group({ tabIds: sourceId, groupId: tab.groupId });
+            } else {
+                await chrome.tabs.ungroup(sourceId);
+            }
+
+            isDragging = false; 
             renderTabs(true);
-        } catch(err) { console.error("Drop error:", err); }
+        } catch(err) { 
+            isDragging = false;
+            console.error("Drop error:", err); 
+        }
     };
-    // ----------------------------
 
     const checkWrapper = document.createElement('div');
     checkWrapper.className = 'tab-check-wrapper';
@@ -351,13 +382,36 @@ function createTabElement(tab, index) {
     `;
     div.insertAdjacentHTML('beforeend', contentHtml);
 
+    // Логика добавления вкладки между существующими
+    const insertTabAt = async (idx) => {
+        isSwitchingProgrammatically = true;
+        try {
+            const { workspaces, activeId } = await storage.getWorkspaces();
+            const newTab = await chrome.tabs.create({ active: true, index: idx });
+            if (activeId === 'ws_default') {
+                let group = await api.findGroup("General");
+                if (group) await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+            } else {
+                const activeWsName = workspaces[activeId]?.name;
+                if (activeWsName) {
+                    let group = await api.findGroup(activeWsName);
+                    if (group) await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+                    else {
+                        const newGroupId = await chrome.tabs.group({ tabIds: newTab.id });
+                        await chrome.tabGroups.update(newGroupId, { title: activeWsName });
+                    }
+                }
+            }
+        } finally { setTimeout(() => { isSwitchingProgrammatically = false; }, 500); }
+    };
+
     const btnTop = document.createElement('div');
     btnTop.className = 'add-tab-btn top';
-    btnTop.onclick = (e) => { e.stopPropagation(); api.createTabAtIndex(tab.index, true, tab.id); };
+    btnTop.onclick = (e) => { e.stopPropagation(); insertTabAt(tab.index); };
 
     const btnBottom = document.createElement('div');
     btnBottom.className = 'add-tab-btn bottom';
-    btnBottom.onclick = (e) => { e.stopPropagation(); api.createTabAtIndex(tab.index + 1, true, tab.id); };
+    btnBottom.onclick = (e) => { e.stopPropagation(); insertTabAt(tab.index + 1); };
 
     const showTop = () => { 
         btnTop.classList.add('visible'); 
@@ -410,18 +464,14 @@ function createTabElement(tab, index) {
     div.querySelector('.incognito-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.openInIncognito([tab.id]); });
     div.querySelector('.audio-indicator')?.addEventListener('click', (e) => { e.stopPropagation(); api.toggleMuteTab(tab.id, isMuted); });
     
-    // --- ИСПРАВЛЕННЫЙ ДУБЛИКАТ ---
-    // Вызываем нативный метод API Chrome без лишних заморочек
     div.querySelector('.duplicate-btn')?.addEventListener('click', (e) => { 
         e.stopPropagation(); 
         chrome.tabs.duplicate(tab.id);
     });
 
-    // --- ИСПРАВЛЕННОЕ УДАЛЕНИЕ ---
-    // Прямой вызов chrome API: удалит вкладку на 100%, и Chrome сам триггернет обновление интерфейса
     div.querySelector('.close-btn')?.addEventListener('click', (e) => { 
         e.stopPropagation(); 
-        div.style.display = 'none'; // Визуально прячем мгновенно
+        div.style.display = 'none'; 
         try {
             chrome.tabs.remove(tab.id);
         } catch(err) {
@@ -511,7 +561,6 @@ function renderPinnedBar(pinnedTabs) {
 }
 
 async function renderTabs(forceFullRender = false) {
-    // ВАЖНО: Если мы тащим вкладку мышкой, мы НЕ перерисовываем DOM, чтобы не сломать Drag & Drop
     if (isDragging && !forceFullRender) return;
 
     const tabs = await api.getTabs();
@@ -748,7 +797,9 @@ async function renderAllProjectsList() {
     const createRow = (id, slotIndex = null) => {
         const ws = workspaces[id];
         if (!ws) return null;
-        if (filterText && !ws.name.toLowerCase().includes(filterText)) return null;
+        
+        const displayName = id === 'ws_default' ? 'General' : ws.name;
+        if (filterText && !displayName.toLowerCase().includes(filterText)) return null;
 
         const row = document.createElement('div');
         row.className = `project-row ${id === activeId ? 'active' : ''}`;
@@ -759,7 +810,7 @@ async function renderAllProjectsList() {
         } else {
             contentHTML += `<div style="width:22px; margin-right:8px; pointer-events:none; flex-shrink:0;"></div>`; 
         }
-        contentHTML += `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:none; line-height:1.5; display:flex; align-items:center;">${escapeHtml(ws.name)}</span>`;
+        contentHTML += `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:none; line-height:1.5; display:flex; align-items:center;">${escapeHtml(displayName)}</span>`;
         
         row.innerHTML = contentHTML;
 
@@ -925,6 +976,8 @@ async function submitDialog() {
     
     try {
         if (editingWorkspaceId) {
+            if (editingWorkspaceId === 'ws_default') return; // Защита General
+            
             const { workspaces } = await storage.getWorkspaces();
             const oldName = workspaces[editingWorkspaceId]?.name;
             
@@ -958,14 +1011,14 @@ async function switchWorkspace(targetId) {
     isSwitchingProgrammatically = true;
     try {
         const { workspaces, activeId } = await storage.getWorkspaces();
+        const targetName = targetId === 'ws_default' ? 'General' : workspaces[targetId].name;
+
         if (targetId === activeId) {
-            const ws = workspaces[targetId];
-            await api.activateWorkspace(ws.name);
+            await api.activateWorkspace(targetName);
             isSwitchingProgrammatically = false;
             return;
         }
 
-        const targetWs = workspaces[targetId];
         await storage.setActiveWorkspace(targetId);
         
         let { orderedIds } = await getOrderedIds();
@@ -976,7 +1029,9 @@ async function switchWorkspace(targetId) {
             await saveOrderedIds(orderedIds);
         }
 
-        await api.activateWorkspace(targetWs.name);
+        await api.activateWorkspace(targetName);
+        
+        currentWsStartTime = Date.now(); // Обновляем время для очистки истории Restore
 
         await renderWorkspacesBar();
         await renderTabs(true);
@@ -996,7 +1051,7 @@ async function renderWorkspacesBar() {
         const btn = document.createElement('button');
         btn.className = `ws-btn ${id === activeId ? 'active' : ''}`;
         const span = document.createElement('span'); 
-        span.innerText = ws.name;
+        span.innerText = id === 'ws_default' ? 'General' : ws.name;
         btn.appendChild(span);
         
         btn.onclick = () => switchWorkspace(id);
@@ -1009,7 +1064,8 @@ async function renderWorkspacesBar() {
                 btn.classList.remove('drag-over'); 
                 if(draggingTabId) {
                     isDragging = false;
-                    await api.addTabToGroupByName(Number(draggingTabId), ws.name);
+                    const dropWsName = id === 'ws_default' ? 'General' : ws.name;
+                    await api.addTabToGroupByName(Number(draggingTabId), dropWsName);
                     renderTabs(true);
                 }
             };
@@ -1117,15 +1173,24 @@ function setupEventListeners() {
         isSwitchingProgrammatically = true; 
         try {
             const { workspaces, activeId } = await storage.getWorkspaces();
-            const activeWsName = workspaces[activeId]?.name || "General";
-            let group = await api.findGroup(activeWsName);
-            
             const newTab = await chrome.tabs.create({ active: true });
-            if (group) {
-                await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+            
+            if (activeId === 'ws_default') {
+                let group = await api.findGroup("General");
+                if (group) {
+                    await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+                }
             } else {
-                const newGroupId = await chrome.tabs.group({ tabIds: newTab.id });
-                await chrome.tabGroups.update(newGroupId, { title: activeWsName });
+                const activeWsName = workspaces[activeId]?.name;
+                if (activeWsName) {
+                    let group = await api.findGroup(activeWsName);
+                    if (group) {
+                        await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+                    } else {
+                        const newGroupId = await chrome.tabs.group({ tabIds: newTab.id });
+                        await chrome.tabGroups.update(newGroupId, { title: activeWsName });
+                    }
+                }
             }
         } finally {
             setTimeout(() => { isSwitchingProgrammatically = false; }, 500);
@@ -1147,6 +1212,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
         await hardSyncWithChrome(); 
+        
+        // --- Логика синхронизации активной вкладки Chrome с расширением при открытии ---
+        const [initActiveTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const { workspaces } = await storage.getWorkspaces();
+        let targetWsIdInit = 'ws_default'; 
+        
+        if (initActiveTab && initActiveTab.groupId !== -1) {
+            const groupInit = await chrome.tabGroups.get(initActiveTab.groupId);
+            const groupNameInit = (groupInit.title || '').trim().toLowerCase();
+            const matchedWsInit = Object.values(workspaces).find(ws => ws.name.trim().toLowerCase() === groupNameInit);
+            if (matchedWsInit) targetWsIdInit = matchedWsInit.id;
+        }
+        await storage.setActiveWorkspace(targetWsIdInit);
+        currentWsStartTime = Date.now(); // Засекаем старт для восстановления истории
+        // -------------------------------------------------------------------------------
         
         await renderWorkspacesBar();
         await renderTabs(true);
@@ -1176,7 +1256,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (newName.toLowerCase() === 'general') return;
 
                 const { workspaces, activeId } = await storage.getWorkspaces();
-                if (activeId && workspaces[activeId]) {
+                if (activeId && workspaces[activeId] && activeId !== 'ws_default') {
                     const tabsInGroup = await chrome.tabs.query({ groupId: group.id, active: true, currentWindow: true });
                     if (tabsInGroup.length > 0) {
                         if (workspaces[activeId].name !== newName) {
@@ -1205,14 +1285,23 @@ document.addEventListener('DOMContentLoaded', async () => {
                 } else if (!tab.pinned) {
                     isSwitchingProgrammatically = true;
                     targetWsId = activeId;
-                    const activeWsName = workspaces[activeId]?.name || "General";
-                    let group = await api.findGroup(activeWsName);
                     
-                    if (group) {
-                        await chrome.tabs.group({ tabIds: tab.id, groupId: group.id });
+                    if (activeId === 'ws_default') {
+                        let group = await api.findGroup("General");
+                        if (group) {
+                            await chrome.tabs.group({ tabIds: tab.id, groupId: group.id });
+                        }
                     } else {
-                        const newGroupId = await chrome.tabs.group({ tabIds: tab.id });
-                        await chrome.tabGroups.update(newGroupId, { title: activeWsName });
+                        const activeWsName = workspaces[activeId]?.name;
+                        if (activeWsName) {
+                            let group = await api.findGroup(activeWsName);
+                            if (group) {
+                                await chrome.tabs.group({ tabIds: tab.id, groupId: group.id });
+                            } else {
+                                const newGroupId = await chrome.tabs.group({ tabIds: tab.id });
+                                await chrome.tabGroups.update(newGroupId, { title: activeWsName });
+                            }
+                        }
                     }
                     setTimeout(() => { isSwitchingProgrammatically = false; }, 300);
                 }
@@ -1268,8 +1357,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
 
         if(els.restoreBtn) {
-            els.restoreBtn.addEventListener('click', () => {
-                try { if (chrome.sessions?.restore) chrome.sessions.restore(); } catch(e) { console.error(e); }
+            els.restoreBtn.addEventListener('click', async () => {
+                try { 
+                    if (chrome.sessions?.getRecentlyClosed) {
+                        const sessions = await chrome.sessions.getRecentlyClosed();
+                        const validSession = sessions.find(s => s.tab && s.lastModified >= Math.floor(currentWsStartTime / 1000));
+                        if (validSession) {
+                            await chrome.sessions.restore(validSession.tab.sessionId);
+                        }
+                    } else if (chrome.sessions?.restore) {
+                        chrome.sessions.restore(); 
+                    }
+                } catch(e) { console.error(e); }
             });
         }
 
@@ -1290,7 +1389,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
-        // Защита от вечного зависания isDragging, если Drag and Drop прервался
         window.addEventListener('mouseup', () => {
             isSelectionDragging = false;
             if (isDragging) {
