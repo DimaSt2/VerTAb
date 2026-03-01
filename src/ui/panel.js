@@ -121,6 +121,58 @@ function handleSearchInput() {
     });
 }
 
+function injectClearButton(inputEl, onClear) {
+    if (!inputEl) return;
+    
+    let container = inputEl.parentElement;
+    
+    if (inputEl.id !== 'search-input') {
+        container = document.createElement('div');
+        container.style.position = 'relative';
+        container.style.width = '100%';
+        inputEl.parentNode.insertBefore(container, inputEl);
+        container.appendChild(inputEl);
+        inputEl.style.paddingRight = '28px'; 
+    } else {
+        inputEl.style.paddingRight = '36px'; 
+    }
+    
+    const btn = document.createElement('button');
+    // ИСПРАВЛЕНИЕ: Добавлен style="position: static !important; left: auto !important;" чтобы обойти конфликт с CSS лупы
+    btn.innerHTML = `<svg style="position: static !important; left: auto !important; margin: 0 !important;" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+    btn.style.position = 'absolute';
+    // ИСПРАВЛЕНИЕ: Для главного поиска крестик сдвигается левее (14px)
+    btn.style.right = inputEl.id === 'search-input' ? '14px' : '8px'; 
+    btn.style.top = '50%';
+    btn.style.transform = 'translateY(-50%)'; 
+    btn.style.background = 'transparent';
+    btn.style.border = 'none';
+    btn.style.color = 'var(--c-text-secondary, #9ca3af)';
+    btn.style.cursor = 'pointer';
+    btn.style.display = 'none';
+    btn.style.padding = '4px';
+    btn.style.zIndex = '10';
+    btn.style.alignItems = 'center';
+    btn.style.justifyContent = 'center';
+    
+    container.appendChild(btn);
+    
+    inputEl.addEventListener('input', () => {
+        btn.style.display = inputEl.value.length > 0 ? 'flex' : 'none';
+    });
+    
+    btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        inputEl.value = '';
+        btn.style.display = 'none';
+        inputEl.focus();
+        if (onClear) onClear();
+    });
+    
+    inputEl._clearBtn = btn;
+}
+
 const debounce = (fn, delay) => {
     let timer;
     return (...args) => {
@@ -224,7 +276,9 @@ function setupDelegatedTabListeners() {
         }
         if (e.target.closest('.pin-btn')) {
             e.stopPropagation();
-            api.togglePinTab(tabId, card.dataset.isPinned === 'true');
+            chrome.tabs.get(tabId, (t) => {
+                if (t) chrome.tabs.update(tabId, { pinned: !t.pinned });
+            });
             return;
         }
         if (e.target.closest('.audio-indicator')) {
@@ -344,12 +398,16 @@ function setupDelegatedTabListeners() {
         e.dataTransfer.setData('text/plain', draggingTabId.toString());
         e.dataTransfer.effectAllowed = 'move';
         
+        document.body.classList.add('dragging-unpinned');
+        
         setTimeout(() => card.classList.add('dragging'), 0);
     });
 
     els.tabsList.addEventListener('dragend', (e) => {
         isDragging = false;
         draggingTabId = null;
+        document.body.classList.remove('dragging-unpinned');
+        
         const card = e.target.closest('.tab-card');
         if (card) card.classList.remove('dragging');
         document.querySelectorAll('.tab-card').forEach(el => {
@@ -362,9 +420,9 @@ function setupTabsListDropHandlers() {
     if (!els.tabsList) return;
     
     els.tabsList.ondragover = (e) => {
-        if (draggingTabPinned) {
+        if (draggingTabPinned && draggingTabId) {
             e.preventDefault();
-            els.tabsList.classList.add('drag-over-pinned');
+            els.tabsList.style.backgroundColor = 'var(--c-bg-secondary)';
             return;
         }
 
@@ -385,15 +443,20 @@ function setupTabsListDropHandlers() {
     };
 
     els.tabsList.ondragleave = (e) => { 
-        if (draggingTabPinned) els.tabsList.classList.remove('drag-over-pinned');
+        if (draggingTabPinned) {
+            els.tabsList.style.backgroundColor = '';
+            return;
+        }
         const card = e.target.closest('.tab-card');
         if (card) card.classList.remove('sort-target-top', 'sort-target-bottom');
     };
 
     els.tabsList.ondrop = async (e) => {
+        document.body.classList.remove('dragging-pinned', 'dragging-unpinned');
+
         if (draggingTabPinned && draggingTabId) {
             e.preventDefault();
-            els.tabsList.classList.remove('drag-over-pinned');
+            els.tabsList.style.backgroundColor = '';
             const tabId = Number(draggingTabId);
             
             try {
@@ -463,6 +526,7 @@ function setupTabsListDropHandlers() {
         els.pinnedBar.ondragleave = () => { els.pinnedBar.style.backgroundColor = ''; };
         els.pinnedBar.ondrop = async (e) => {
             e.preventDefault();
+            document.body.classList.remove('dragging-pinned', 'dragging-unpinned');
             els.pinnedBar.style.backgroundColor = '';
             if (draggingTabId && !draggingTabPinned) {
                 await chrome.tabs.update(Number(draggingTabId), { pinned: true });
@@ -478,7 +542,7 @@ function createTabElement(tab, index) {
     div.dataset.id = tab.id;
     div.setAttribute('data-url', escapeHtml(tab.url)); 
     div.dataset.index = index; 
-    div.dataset.chromeIndex = tab.index; // Реальный индекс вкладки в браузере
+    div.dataset.chromeIndex = tab.index;
     div.dataset.groupId = tab.groupId ?? -1;
     div.dataset.isPinned = tab.isPinned;
     div.dataset.isMuted = tab.mutedInfo?.muted ?? false;
@@ -575,6 +639,9 @@ function renderPinnedBar(pinnedTabs) {
             isDragging = true;
             draggingTabId = tab.id;
             draggingTabPinned = true;
+            
+            document.body.classList.add('dragging-pinned');
+            
             e.dataTransfer.setData('text/plain', tab.id.toString());
             e.dataTransfer.effectAllowed = 'move';
             setTimeout(() => item.classList.add('dragging'), 0);
@@ -1021,7 +1088,9 @@ function openDialog(mode, workspace = null) {
     setTimeout(() => els.newWsName.focus(), 50);
 }
 
-async function submitDialog() {
+async function submitDialog(e) {
+    if (e) e.preventDefault();
+    
     const name = els.newWsName.value.trim();
     if (!name) return;
     
@@ -1029,14 +1098,14 @@ async function submitDialog() {
     
     try {
         if (editingWorkspaceId) {
-            if (editingWorkspaceId === 'ws_default') return; // Защита General
+            if (editingWorkspaceId === 'ws_default') return; 
             
             const { workspaces } = await storage.getWorkspaces();
             const oldName = workspaces[editingWorkspaceId]?.name;
             
             await storage.renameWorkspace(editingWorkspaceId, name);
             if (oldName) {
-                await api.renameGroup(oldName, name); 
+                try { await api.renameGroup(oldName, name); } catch(err) { }
             }
         } else {
             await api.enforceGeneralGroup();
@@ -1130,7 +1199,19 @@ async function renderWorkspacesBar() {
     });
 }
 
+function closeProjectsMenu() {
+    els.projectsDropdown.classList.remove('open');
+    if (els.projectSearch) {
+        els.projectSearch.value = '';
+        if (els.projectSearch._clearBtn) els.projectSearch._clearBtn.style.display = 'none';
+        renderAllProjectsList();
+    }
+}
+
 function setupEventListeners() {
+    injectClearButton(els.searchInput, handleSearchInput);
+    injectClearButton(els.projectSearch, renderAllProjectsList);
+
     els.navBack?.addEventListener('click', async () => {
         const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
         if(tab) chrome.tabs.goBack(tab.id);
@@ -1160,13 +1241,15 @@ function setupEventListeners() {
     });
 
     els.createWsBtn?.addEventListener('click', () => openDialog('create'));
-    els.cancelCreateBtn?.addEventListener('click', () => els.dialog.close());
+    els.cancelCreateBtn?.addEventListener('click', (e) => { e.preventDefault(); els.dialog.close(); });
     els.dialogSubmitBtn?.addEventListener('click', submitDialog);
-    els.newWsName?.addEventListener('keydown', (e) => { if(e.key === 'Enter') els.dialogSubmitBtn.click(); });
+    els.newWsName?.addEventListener('keydown', (e) => { 
+        if(e.key === 'Enter') { e.preventDefault(); submitDialog(e); } 
+    });
 
     els.settingsBtn?.addEventListener('click', (e) => { 
         e.stopPropagation(); 
-        els.projectsDropdown.classList.remove('open'); 
+        closeProjectsMenu(); 
         els.settingsMenu.classList.toggle('open'); 
     });
     els.allWsBtn?.addEventListener('click', async (e) => { 
@@ -1176,9 +1259,14 @@ function setupEventListeners() {
         if(els.projectsDropdown.classList.contains('open')) { 
             await renderAllProjectsList(); 
             setTimeout(() => els.projectSearch?.focus(), 100); 
+        } else {
+            closeProjectsMenu();
         }
     });
-    els.closeProjectsBtn?.addEventListener('click', (e) => { e.stopPropagation(); els.projectsDropdown.classList.remove('open'); });
+    els.closeProjectsBtn?.addEventListener('click', (e) => { 
+        e.stopPropagation(); 
+        closeProjectsMenu();
+    });
     els.closeSettingsBtn?.addEventListener('click', (e) => { e.stopPropagation(); els.settingsMenu.classList.remove('open'); });
 
     document.addEventListener('click', (e) => {
@@ -1187,13 +1275,32 @@ function setupEventListeners() {
         }
         if (els.projectsDropdown && !els.projectsDropdown.contains(e.target) && e.target !== els.allWsBtn) {
             if (els.dialog && els.dialog.contains(e.target)) return;
-            els.projectsDropdown.classList.remove('open');
+            if (els.projectsDropdown.classList.contains('open')) {
+                closeProjectsMenu();
+            }
         }
     });
 
     els.zenModeBtn?.addEventListener('click', async () => { 
-        const isFull = await api.toggleZenMode(); 
-        updateZenIcon(isFull); 
+        try {
+            const currentWindow = await chrome.windows.getCurrent();
+            const isFull = currentWindow.state === 'fullscreen';
+            if (!isFull) {
+                localStorage.setItem('preFullscreenState', currentWindow.state);
+                await chrome.windows.update(currentWindow.id, { state: 'fullscreen' });
+                updateZenIcon(true);
+            } else {
+                const prevState = localStorage.getItem('preFullscreenState') || 'maximized';
+                // Защита: чтобы не вернуть в сломанное микро-окно, если F11 переключалось вне расширения
+                const targetState = (prevState === 'fullscreen' || prevState === 'minimized') ? 'maximized' : prevState;
+                await chrome.windows.update(currentWindow.id, { state: targetState });
+                updateZenIcon(false); 
+            }
+        } catch (err) {
+            console.error("Fullscreen failed:", err);
+            const isFull = await api.toggleZenMode(); 
+            updateZenIcon(isFull);
+        }
     });
 
     const savedTheme = localStorage.getItem('theme') || 'light';
@@ -1264,6 +1371,23 @@ function setupEventListeners() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    const style = document.createElement('style');
+    style.innerHTML = `
+        body.dragging-pinned .tab-card { pointer-events: none !important; }
+        body.dragging-unpinned .pinned-tab-item { pointer-events: none !important; }
+        
+        #create-ws-btn[data-tooltip]::after, #create-ws-btn[data-tooltip]::before {
+            margin-left: 25px !important;
+        }
+        #all-ws-toggle[data-tooltip]::after, #all-ws-toggle[data-tooltip]::before {
+            margin-left: -35px !important;
+        }
+        #zen-mode-btn[data-tooltip]::after, #zen-mode-btn[data-tooltip]::before {
+            margin-left: -35px !important;
+        }
+    `;
+    document.head.appendChild(style);
+
     setupDelegatedTabListeners();
     setupEventListeners();
     setupTabsListDropHandlers();
@@ -1457,6 +1581,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             isSelectionDragging = false;
             if (isDragging) {
                 isDragging = false;
+                document.body.classList.remove('dragging-pinned', 'dragging-unpinned');
                 document.querySelectorAll('.tab-card, .pinned-tab-item').forEach(el => {
                     el.classList.remove('dragging', 'sort-target-top', 'sort-target-bottom', 'drag-over');
                 });
