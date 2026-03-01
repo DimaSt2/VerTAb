@@ -55,7 +55,7 @@ let isDragging = false;
 let currentTabs = [];
 let timeUpdateInterval = null;
 let previousActiveTabId = null;
-let currentWsStartTime = Date.now(); // Время переключения в текущий Workspace для обнуления истории Restore
+let currentWsStartTime = Date.now(); 
 
 function escapeHtml(str) {
     if (!str) return '';
@@ -169,15 +169,227 @@ function scrollToTabById(tabId) {
     }
 }
 
+const insertTabAt = async (idx) => {
+    isSwitchingProgrammatically = true;
+    try {
+        const { workspaces, activeId } = await storage.getWorkspaces();
+        const newTab = await chrome.tabs.create({ active: true, index: idx });
+        
+        if (activeId === 'ws_default') {
+            let group = await api.findGroup("General");
+            if (group) await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+        } else {
+            const activeWsName = workspaces[activeId]?.name;
+            if (activeWsName) {
+                let group = await api.findGroup(activeWsName);
+                if (group) {
+                    await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
+                } else {
+                    const newGroupId = await chrome.tabs.group({ tabIds: newTab.id });
+                    await chrome.tabGroups.update(newGroupId, { title: activeWsName });
+                }
+            }
+        }
+        
+        await chrome.tabs.move(newTab.id, { index: idx });
+        
+    } finally { 
+        setTimeout(() => { isSwitchingProgrammatically = false; }, 500); 
+    }
+};
+
+function setupDelegatedTabListeners() {
+    if (!els.tabsList) return;
+
+    els.tabsList.addEventListener('click', async (e) => {
+        const card = e.target.closest('.tab-card');
+        if (!card) return;
+        const tabId = Number(card.dataset.id);
+
+        if (e.target.closest('.close-btn')) {
+            e.stopPropagation();
+            card.style.display = 'none';
+            try { await chrome.tabs.remove(tabId); } catch(err) { api.closeTab(tabId); }
+            return;
+        }
+        if (e.target.closest('.duplicate-btn')) {
+            e.stopPropagation();
+            chrome.tabs.duplicate(tabId);
+            return;
+        }
+        if (e.target.closest('.incognito-btn')) {
+            e.stopPropagation();
+            api.openInIncognito([tabId]);
+            return;
+        }
+        if (e.target.closest('.pin-btn')) {
+            e.stopPropagation();
+            api.togglePinTab(tabId, card.dataset.isPinned === 'true');
+            return;
+        }
+        if (e.target.closest('.audio-indicator')) {
+            e.stopPropagation();
+            api.toggleMuteTab(tabId, card.dataset.isMuted === 'true');
+            return;
+        }
+        if (e.target.closest('.add-tab-btn.top')) {
+            e.stopPropagation();
+            insertTabAt(Number(card.dataset.chromeIndex));
+            return;
+        }
+        if (e.target.closest('.add-tab-btn.bottom')) {
+            e.stopPropagation();
+            insertTabAt(Number(card.dataset.chromeIndex) + 1);
+            return;
+        }
+        if (e.target.closest('.tab-check-wrapper')) {
+            e.stopPropagation(); 
+            return;
+        }
+
+        api.activateTab(tabId);
+    });
+
+    els.tabsList.addEventListener('mousedown', (e) => {
+        const checkWrapper = e.target.closest('.tab-check-wrapper');
+        if (checkWrapper) {
+            e.preventDefault(); e.stopPropagation();
+            const checkbox = checkWrapper.querySelector('.tab-check-box');
+            isSelectionDragging = true;
+            const newState = !checkbox.checked;
+            checkbox.checked = newState;
+            selectionTargetState = newState;
+            updateManagementPanel();
+        }
+    });
+
+    els.tabsList.addEventListener('mouseover', (e) => {
+        if (isSelectionDragging) {
+            const checkWrapper = e.target.closest('.tab-check-wrapper');
+            if (checkWrapper) {
+                const checkbox = checkWrapper.querySelector('.tab-check-box');
+                checkbox.checked = selectionTargetState;
+                updateManagementPanel();
+            }
+        }
+    });
+
+    let currentHoveredCard = null;
+
+    function clearCardHover(card) {
+        if (!card) return;
+        const btnTop = card.querySelector('.add-tab-btn.top');
+        const btnBottom = card.querySelector('.add-tab-btn.bottom');
+        if(btnTop) btnTop.classList.remove('visible');
+        if(btnBottom) btnBottom.classList.remove('visible');
+        card.classList.remove('gradient-top', 'gradient-bottom');
+    }
+
+    els.tabsList.addEventListener('mousemove', (e) => {
+        if (isSelectionDragging) return;
+        const card = e.target.closest('.tab-card');
+        
+        if (card) {
+            if (currentHoveredCard && currentHoveredCard !== card) clearCardHover(currentHoveredCard);
+            currentHoveredCard = card;
+            
+            const rect = card.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            const isManageMode = !document.body.classList.contains('manage-mode-off');
+            const triggerZone = isManageMode ? 75 : 60; 
+
+            if (x < triggerZone && (!isManageMode || x > 30)) { 
+                const btnTop = card.querySelector('.add-tab-btn.top');
+                const btnBottom = card.querySelector('.add-tab-btn.bottom');
+                if (y < rect.height / 2) {
+                    btnTop.classList.add('visible');
+                    btnBottom.classList.remove('visible');
+                    card.classList.add('gradient-top');
+                    card.classList.remove('gradient-bottom');
+                } else {
+                    btnTop.classList.remove('visible');
+                    btnBottom.classList.add('visible');
+                    card.classList.remove('gradient-top');
+                    card.classList.add('gradient-bottom');
+                }
+            } else {
+                clearCardHover(card);
+            }
+        } else if (currentHoveredCard) {
+            clearCardHover(currentHoveredCard);
+            currentHoveredCard = null;
+        }
+    });
+
+    els.tabsList.addEventListener('mouseleave', () => {
+        if (currentHoveredCard) clearCardHover(currentHoveredCard);
+        currentHoveredCard = null;
+    });
+
+    els.tabsList.addEventListener('dragstart', (e) => {
+        const card = e.target.closest('.tab-card');
+        if (!card) return;
+
+        if (e.target.closest('.tab-check-wrapper, .add-tab-btn, .tab-action-btn, .audio-indicator')) {
+            e.preventDefault(); 
+            return;
+        }
+        
+        isDragging = true;
+        draggingTabId = Number(card.dataset.id);
+        draggingTabPinned = false;
+        
+        e.dataTransfer.setData('text/plain', draggingTabId.toString());
+        e.dataTransfer.effectAllowed = 'move';
+        
+        setTimeout(() => card.classList.add('dragging'), 0);
+    });
+
+    els.tabsList.addEventListener('dragend', (e) => {
+        isDragging = false;
+        draggingTabId = null;
+        const card = e.target.closest('.tab-card');
+        if (card) card.classList.remove('dragging');
+        document.querySelectorAll('.tab-card').forEach(el => {
+            el.classList.remove('sort-target-top', 'sort-target-bottom');
+        });
+    });
+}
+
 function setupTabsListDropHandlers() {
     if (!els.tabsList) return;
+    
     els.tabsList.ondragover = (e) => {
         if (draggingTabPinned) {
             e.preventDefault();
             els.tabsList.classList.add('drag-over-pinned');
+            return;
+        }
+
+        const card = e.target.closest('.tab-card');
+        if (card) {
+            e.preventDefault(); 
+            e.dataTransfer.dropEffect = 'move';
+            
+            if (!draggingTabId || draggingTabId === Number(card.dataset.id)) return;
+            
+            const rect = card.getBoundingClientRect(); 
+            document.querySelectorAll('.tab-card').forEach(el => {
+                if (el !== card) el.classList.remove('sort-target-top', 'sort-target-bottom');
+            });
+            if (e.clientY < rect.top + rect.height/2) card.classList.add('sort-target-top');
+            else card.classList.add('sort-target-bottom');
         }
     };
-    els.tabsList.ondragleave = () => els.tabsList.classList.remove('drag-over-pinned');
+
+    els.tabsList.ondragleave = (e) => { 
+        if (draggingTabPinned) els.tabsList.classList.remove('drag-over-pinned');
+        const card = e.target.closest('.tab-card');
+        if (card) card.classList.remove('sort-target-top', 'sort-target-bottom');
+    };
+
     els.tabsList.ondrop = async (e) => {
         if (draggingTabPinned && draggingTabId) {
             e.preventDefault();
@@ -186,7 +398,6 @@ function setupTabsListDropHandlers() {
             
             try {
                 await chrome.tabs.update(tabId, { pinned: false });
-                
                 const { workspaces, activeId } = await storage.getWorkspaces();
                 const wsName = activeId === 'ws_default' ? 'General' : workspaces[activeId]?.name;
                 
@@ -201,12 +412,43 @@ function setupTabsListDropHandlers() {
                         await chrome.tabs.ungroup(tabId);
                     }
                 }
-
                 isDragging = false;
                 renderTabs(true);
             } catch(err) {
                 isDragging = false;
                 console.error("Drop unpin error:", err);
+            }
+            return;
+        }
+
+        const card = e.target.closest('.tab-card');
+        if (card) {
+            e.preventDefault(); 
+            e.stopPropagation();
+            document.querySelectorAll('.tab-card').forEach(el => el.classList.remove('sort-target-top', 'sort-target-bottom')); 
+
+            try {
+                const sourceId = Number(e.dataTransfer.getData('text/plain'));
+                if (!sourceId || isNaN(sourceId) || sourceId === Number(card.dataset.id)) return;
+
+                const rect = card.getBoundingClientRect(); 
+                const targetChromeIndex = Number(card.dataset.chromeIndex);
+                const newIndex = e.clientY >= rect.top + rect.height/2 ? targetChromeIndex + 1 : targetChromeIndex; 
+                
+                const targetGroupId = card.dataset.groupId ? Number(card.dataset.groupId) : -1;
+                if (targetGroupId !== -1) {
+                    await chrome.tabs.group({ tabIds: sourceId, groupId: targetGroupId });
+                } else {
+                    await chrome.tabs.ungroup(sourceId);
+                }
+
+                await chrome.tabs.move(sourceId, { index: newIndex });
+
+                isDragging = false; 
+                renderTabs(true);
+            } catch(err) { 
+                isDragging = false;
+                console.error("Drop error:", err); 
             }
         }
     };
@@ -234,119 +476,14 @@ function createTabElement(tab, index) {
     div.className = `tab-card ${tab.isActive ? 'active' : ''}`;
     div.draggable = true;
     div.dataset.id = tab.id;
-    div.dataset.url = tab.url;
+    div.setAttribute('data-url', escapeHtml(tab.url)); 
+    div.dataset.index = index; 
+    div.dataset.chromeIndex = tab.index; // Реальный индекс вкладки в браузере
+    div.dataset.groupId = tab.groupId ?? -1;
+    div.dataset.isPinned = tab.isPinned;
+    div.dataset.isMuted = tab.mutedInfo?.muted ?? false;
 
-    div.ondragstart = (e) => { 
-        if(e.target.closest('.tab-check-wrapper, .add-tab-btn, .tab-action-btn, .audio-indicator')) {
-            e.preventDefault(); 
-            return;
-        }
-        
-        isDragging = true;
-        draggingTabId = tab.id;
-        draggingTabPinned = false;
-        
-        e.dataTransfer.setData('text/plain', tab.id.toString());
-        e.dataTransfer.effectAllowed = 'move';
-        
-        setTimeout(() => div.classList.add('dragging'), 0);
-    };
-
-    div.ondragend = () => {
-        isDragging = false;
-        draggingTabId = null;
-        div.classList.remove('dragging');
-        document.querySelectorAll('.tab-card').forEach(el => {
-            el.classList.remove('sort-target-top', 'sort-target-bottom');
-        });
-    };
-
-    div.ondragover = (e) => { 
-        if (draggingTabPinned) return; 
-        e.preventDefault(); 
-        e.dataTransfer.dropEffect = 'move';
-        
-        if (!draggingTabId || draggingTabId === tab.id) return;
-        
-        const rect = div.getBoundingClientRect(); 
-        div.classList.remove('sort-target-top', 'sort-target-bottom');
-        if (e.clientY < rect.top + rect.height/2) div.classList.add('sort-target-top');
-        else div.classList.add('sort-target-bottom');
-    };
-
-    div.ondragleave = () => div.classList.remove('sort-target-top', 'sort-target-bottom');
-
-    div.ondrop = async (e) => { 
-        if (draggingTabPinned) return; 
-        e.preventDefault(); 
-        e.stopPropagation();
-        
-        div.classList.remove('sort-target-top', 'sort-target-bottom'); 
-
-        try {
-            const sourceId = Number(e.dataTransfer.getData('text/plain'));
-            if (!sourceId || isNaN(sourceId) || sourceId === tab.id) return;
-
-            const rect = div.getBoundingClientRect(); 
-            const newIndex = e.clientY >= rect.top + rect.height/2 ? tab.index + 1 : tab.index; 
-            
-            await chrome.tabs.move(sourceId, { index: newIndex });
-            
-            if (tab.groupId && tab.groupId !== -1) {
-                await chrome.tabs.group({ tabIds: sourceId, groupId: tab.groupId });
-            } else {
-                await chrome.tabs.ungroup(sourceId);
-            }
-
-            isDragging = false; 
-            renderTabs(true);
-        } catch(err) { 
-            isDragging = false;
-            console.error("Drop error:", err); 
-        }
-    };
-
-    const checkWrapper = document.createElement('div');
-    checkWrapper.className = 'tab-check-wrapper';
-
-    if (index < 10) {
-        const badge = document.createElement('kbd');
-        badge.className = 'shortcut-badge';
-        badge.innerText = index === 9 ? '0' : (index + 1);
-        div.appendChild(badge);
-    }
-
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.className = 'tab-check-box';
-    checkbox.setAttribute('aria-label', 'Select tab');
-    checkbox.style.pointerEvents = 'none'; 
-    checkWrapper.appendChild(checkbox);
-
-    checkWrapper.addEventListener('mousedown', (e) => {
-        e.stopPropagation(); e.preventDefault(); 
-        isSelectionDragging = true;
-        const newState = !checkbox.checked;
-        checkbox.checked = newState;
-        selectionTargetState = newState;
-        updateManagementPanel();
-    });
-
-    checkWrapper.addEventListener('mouseenter', () => {
-        if (isSelectionDragging) {
-            checkbox.checked = selectionTargetState;
-            updateManagementPanel();
-        }
-    });
-
-    checkWrapper.addEventListener('click', (e) => e.stopPropagation());
-    div.appendChild(checkWrapper);
-
-    const divider = document.createElement('div');
-    divider.className = 'tab-divider';
-    div.appendChild(divider);
-
-    const isMuted = tab.mutedInfo?.muted ?? false;
+    const isMuted = div.dataset.isMuted === 'true';
     const hasAudio = tab.audible || isMuted;
     let audioHtml = '';
     if (hasAudio) {
@@ -356,9 +493,19 @@ function createTabElement(tab, index) {
         audioHtml = `<div class="audio-indicator ${isMuted ? 'muted' : ''}" data-tooltip="${isMuted ? 'Unmute' : 'Mute'}" data-tooltip-pos="up">${audioIcon}</div>`;
     }
 
+    let badgeHtml = '';
+    if (index < 10) {
+        badgeHtml = `<kbd class="shortcut-badge">${index === 9 ? '0' : (index + 1)}</kbd>`;
+    }
+
     const timeAgoText = formatTimeAgo(tab.lastAccessed, tab.isActive);
 
-    const contentHtml = `
+    div.innerHTML = `
+        ${badgeHtml}
+        <div class="tab-check-wrapper">
+            <input type="checkbox" class="tab-check-box" aria-label="Select tab" style="pointer-events: none;">
+        </div>
+        <div class="tab-divider"></div>
         <img src="${getFaviconUrl(tab.url)}" class="tab-icon" alt="">
         <div class="tab-info">
             <div class="tab-title">${escapeHtml(tab.title)}</div>
@@ -379,105 +526,9 @@ function createTabElement(tab, index) {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
             </button>
         </div>
+        <div class="add-tab-btn top"></div>
+        <div class="add-tab-btn bottom"></div>
     `;
-    div.insertAdjacentHTML('beforeend', contentHtml);
-
-    // Логика добавления вкладки между существующими
-    const insertTabAt = async (idx) => {
-        isSwitchingProgrammatically = true;
-        try {
-            const { workspaces, activeId } = await storage.getWorkspaces();
-            const newTab = await chrome.tabs.create({ active: true, index: idx });
-            if (activeId === 'ws_default') {
-                let group = await api.findGroup("General");
-                if (group) await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
-            } else {
-                const activeWsName = workspaces[activeId]?.name;
-                if (activeWsName) {
-                    let group = await api.findGroup(activeWsName);
-                    if (group) await chrome.tabs.group({ tabIds: newTab.id, groupId: group.id });
-                    else {
-                        const newGroupId = await chrome.tabs.group({ tabIds: newTab.id });
-                        await chrome.tabGroups.update(newGroupId, { title: activeWsName });
-                    }
-                }
-            }
-        } finally { setTimeout(() => { isSwitchingProgrammatically = false; }, 500); }
-    };
-
-    const btnTop = document.createElement('div');
-    btnTop.className = 'add-tab-btn top';
-    btnTop.onclick = (e) => { e.stopPropagation(); insertTabAt(tab.index); };
-
-    const btnBottom = document.createElement('div');
-    btnBottom.className = 'add-tab-btn bottom';
-    btnBottom.onclick = (e) => { e.stopPropagation(); insertTabAt(tab.index + 1); };
-
-    const showTop = () => { 
-        btnTop.classList.add('visible'); 
-        btnBottom.classList.remove('visible'); 
-        div.classList.add('gradient-top'); 
-        div.classList.remove('gradient-bottom'); 
-    };
-    const showBottom = () => { 
-        btnTop.classList.remove('visible'); 
-        btnBottom.classList.add('visible'); 
-        div.classList.remove('gradient-top'); 
-        div.classList.add('gradient-bottom'); 
-    };
-    const clearAll = () => { 
-        btnTop.classList.remove('visible'); 
-        btnBottom.classList.remove('visible'); 
-        div.classList.remove('gradient-top', 'gradient-bottom'); 
-    };
-
-    div.onmousemove = (e) => {
-        if (isSelectionDragging) return;
-        const rect = div.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        
-        const isManageMode = !document.body.classList.contains('manage-mode-off');
-        const triggerZone = isManageMode ? 75 : 60; 
-
-        if (x < triggerZone && (!isManageMode || x > 30)) { 
-            if (y < rect.height / 2) showTop();
-            else showBottom();
-        } else {
-            clearAll();
-        }
-    };
-
-    btnTop.onmouseenter = showTop;
-    btnBottom.onmouseenter = showBottom;
-    div.onmouseleave = clearAll;
-
-    div.appendChild(btnTop);
-    div.appendChild(btnBottom);
-
-    div.onclick = (e) => {
-        if (e.target.closest('.tab-check-wrapper, .add-tab-btn, .tab-action-btn, .audio-indicator')) return;
-        api.activateTab(tab.id);
-    };
-
-    div.querySelector('.pin-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.togglePinTab(tab.id, tab.isPinned); });
-    div.querySelector('.incognito-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.openInIncognito([tab.id]); });
-    div.querySelector('.audio-indicator')?.addEventListener('click', (e) => { e.stopPropagation(); api.toggleMuteTab(tab.id, isMuted); });
-    
-    div.querySelector('.duplicate-btn')?.addEventListener('click', (e) => { 
-        e.stopPropagation(); 
-        chrome.tabs.duplicate(tab.id);
-    });
-
-    div.querySelector('.close-btn')?.addEventListener('click', (e) => { 
-        e.stopPropagation(); 
-        div.style.display = 'none'; 
-        try {
-            chrome.tabs.remove(tab.id);
-        } catch(err) {
-            api.closeTab(tab.id);
-        }
-    });
 
     return div;
 }
@@ -496,7 +547,7 @@ function renderPinnedBar(pinnedTabs) {
         const item = document.createElement('div');
         item.className = `pinned-tab-item ${tab.isActive ? 'active' : ''}`;
         item.dataset.id = tab.id;
-        item.dataset.tooltip = tab.title;
+        item.setAttribute('data-tooltip', escapeHtml(tab.title)); 
         item.dataset.tooltipPos = 'down';
         item.draggable = true;
         
@@ -611,9 +662,11 @@ async function renderTabs(forceFullRender = false) {
     }
 
     els.tabsList.innerHTML = '';
+    const fragment = document.createDocumentFragment();
     currentTabs.forEach((tab, index) => {
-        els.tabsList.appendChild(createTabElement(tab, index));
+        fragment.appendChild(createTabElement(tab, index));
     });
+    els.tabsList.appendChild(fragment);
 
     handleSearchInput();
     updateManagementPanel();
@@ -1002,6 +1055,9 @@ async function submitDialog() {
         els.dialog.close();
         await renderWorkspacesBar();
         await renderTabs(true);
+        if (els.projectsDropdown && els.projectsDropdown.classList.contains('open')) {
+            await renderAllProjectsList();
+        }
     } finally {
         setTimeout(() => { isSwitchingProgrammatically = false; }, 500);
     }
@@ -1031,7 +1087,7 @@ async function switchWorkspace(targetId) {
 
         await api.activateWorkspace(targetName);
         
-        currentWsStartTime = Date.now(); // Обновляем время для очистки истории Restore
+        currentWsStartTime = Date.now(); 
 
         await renderWorkspacesBar();
         await renderTabs(true);
@@ -1090,9 +1146,13 @@ function setupEventListeners() {
 
     els.omnibox?.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
-            let url = els.omnibox.value;
-            if (!url.includes('.') || url.includes(' ')) url = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
-            else if (!url.startsWith('http')) url = 'https://' + url;
+            let url = els.omnibox.value.trim();
+            if (url.startsWith('chrome-extension://') || url.startsWith('chrome://')) {
+            } else if (!url.includes('.') || url.includes(' ')) {
+                url = `https://www.google.com/search?q=${encodeURIComponent(url)}`;
+            } else if (!url.startsWith('http')) {
+                url = 'https://' + url;
+            }
             const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
             if(tab) await chrome.tabs.update(tab.id, { url });
             else await chrome.tabs.create({ url });
@@ -1122,8 +1182,13 @@ function setupEventListeners() {
     els.closeSettingsBtn?.addEventListener('click', (e) => { e.stopPropagation(); els.settingsMenu.classList.remove('open'); });
 
     document.addEventListener('click', (e) => {
-        if (els.settingsMenu && !els.settingsMenu.contains(e.target) && e.target !== els.settingsBtn) els.settingsMenu.classList.remove('open');
-        if (els.projectsDropdown && !els.projectsDropdown.contains(e.target) && e.target !== els.allWsBtn) els.projectsDropdown.classList.remove('open');
+        if (els.settingsMenu && !els.settingsMenu.contains(e.target) && e.target !== els.settingsBtn) {
+            els.settingsMenu.classList.remove('open');
+        }
+        if (els.projectsDropdown && !els.projectsDropdown.contains(e.target) && e.target !== els.allWsBtn) {
+            if (els.dialog && els.dialog.contains(e.target)) return;
+            els.projectsDropdown.classList.remove('open');
+        }
     });
 
     els.zenModeBtn?.addEventListener('click', async () => { 
@@ -1199,6 +1264,7 @@ function setupEventListeners() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+    setupDelegatedTabListeners();
     setupEventListeners();
     setupTabsListDropHandlers();
 
@@ -1213,7 +1279,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         await hardSyncWithChrome(); 
         
-        // --- Логика синхронизации активной вкладки Chrome с расширением при открытии ---
         const [initActiveTab] = await chrome.tabs.query({ active: true, currentWindow: true });
         const { workspaces } = await storage.getWorkspaces();
         let targetWsIdInit = 'ws_default'; 
@@ -1225,8 +1290,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (matchedWsInit) targetWsIdInit = matchedWsInit.id;
         }
         await storage.setActiveWorkspace(targetWsIdInit);
-        currentWsStartTime = Date.now(); // Засекаем старт для восстановления истории
-        // -------------------------------------------------------------------------------
+        currentWsStartTime = Date.now(); 
         
         await renderWorkspacesBar();
         await renderTabs(true);
