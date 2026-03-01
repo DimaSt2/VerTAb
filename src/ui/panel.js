@@ -38,6 +38,7 @@ const els = {
     bulkIncognito: document.getElementById('bulk-incognito'),
     bulkCloseAbove: document.getElementById('bulk-close-above'),
     bulkCloseBelow: document.getElementById('bulk-close-below'),
+    bulkDuplicate: document.getElementById('bulk-duplicate'),
     pinnedBar: document.getElementById('pinned-bar'),
     pinnedTabsScroll: document.getElementById('pinned-tabs-scroll'),
     restoreBtn: document.getElementById('restore-btn'),
@@ -51,7 +52,6 @@ let isSwitchingProgrammatically = false;
 let isSelectionDragging = false;
 let selectionTargetState = false;
 let isDragging = false;
-let dragTimeout = null;
 let currentTabs = [];
 let timeUpdateInterval = null;
 let previousActiveTabId = null;
@@ -168,34 +168,6 @@ function scrollToTabById(tabId) {
     }
 }
 
-function startDrag(id, isPinned) {
-    draggingTabId = id;
-    draggingTabPinned = isPinned;
-    isDragging = true;
-    document.body.classList.add('is-dragging-tab');
-    clearTimeout(dragTimeout);
-    dragTimeout = setTimeout(() => { if(isDragging) endDrag(); }, 15000);
-}
-
-function endDrag() {
-    if (!isDragging) return;
-    clearTimeout(dragTimeout);
-    draggingTabId = null;
-    draggingTabPinned = false;
-    isDragging = false;
-    document.body.classList.remove('is-dragging-tab');
-    document.querySelectorAll('.tab-card').forEach(el => {
-        el.style.opacity = '1';
-        el.classList.remove('sort-target-top', 'sort-target-bottom');
-    });
-    document.querySelectorAll('.pinned-tab-item').forEach(el => {
-        el.style.opacity = '1';
-        el.classList.remove('drag-over');
-    });
-    if(els.pinnedBar) els.pinnedBar.style.backgroundColor = '';
-    if(els.tabsList) els.tabsList.classList.remove('drag-over-pinned');
-}
-
 function setupTabsListDropHandlers() {
     if (!els.tabsList) return;
     els.tabsList.ondragover = (e) => {
@@ -212,6 +184,7 @@ function setupTabsListDropHandlers() {
             await chrome.tabs.update(Number(draggingTabId), { pinned: false });
         }
     };
+
     if (els.pinnedBar) {
         els.pinnedBar.ondragover = (e) => {
             if (!draggingTabPinned && draggingTabId) {
@@ -237,28 +210,39 @@ function createTabElement(tab, index) {
     div.dataset.id = tab.id;
     div.dataset.url = tab.url;
 
+    // --- БАЗОВЫЙ DRAG AND DROP ---
     div.ondragstart = (e) => { 
-        if(e.target.closest('.tab-check-wrapper') || e.target.closest('.add-tab-btn')) {
+        if(e.target.closest('.tab-check-wrapper, .add-tab-btn, .tab-action-btn, .audio-indicator')) {
             e.preventDefault(); 
             return;
         }
-        const checkbox = div.querySelector('.tab-check-box');
-        if (checkbox?.checked) {
-            const ids = Array.from(document.querySelectorAll('.tab-check-box:checked')).map(cb => cb.closest('.tab-card').dataset.id);
-            e.dataTransfer.setData('text/plain', JSON.stringify(ids));
-        } else {
-            e.dataTransfer.setData('text/plain', JSON.stringify([tab.id]));
-        }
-        startDrag(tab.id, false);
-        div.style.opacity = '0.4';
+        
+        isDragging = true;
+        draggingTabId = tab.id;
+        draggingTabPinned = false;
+        
+        e.dataTransfer.setData('text/plain', tab.id.toString());
         e.dataTransfer.effectAllowed = 'move';
+        
+        // Визуальный эффект при перетаскивании
+        setTimeout(() => div.classList.add('dragging'), 0);
     };
 
-    div.ondragend = () => endDrag();
+    div.ondragend = () => {
+        isDragging = false;
+        draggingTabId = null;
+        div.classList.remove('dragging');
+        document.querySelectorAll('.tab-card').forEach(el => {
+            el.classList.remove('sort-target-top', 'sort-target-bottom');
+        });
+    };
 
     div.ondragover = (e) => { 
-        e.preventDefault(); 
-        if(draggingTabId === tab.id) return;
+        e.preventDefault(); // Обязательно, чтобы сработал ondrop
+        e.dataTransfer.dropEffect = 'move';
+        
+        if (!draggingTabId || draggingTabId === tab.id || draggingTabPinned) return;
+        
         const rect = div.getBoundingClientRect(); 
         div.classList.remove('sort-target-top', 'sort-target-bottom');
         if (e.clientY < rect.top + rect.height/2) div.classList.add('sort-target-top');
@@ -269,18 +253,27 @@ function createTabElement(tab, index) {
 
     div.ondrop = async (e) => { 
         e.preventDefault(); 
+        e.stopPropagation();
+        
         div.classList.remove('sort-target-top', 'sort-target-bottom'); 
         if (draggingTabPinned) return; 
-        const rect = div.getBoundingClientRect(); 
-        const newIndex = e.clientY >= rect.top + rect.height/2 ? tab.index + 1 : tab.index; 
+
         try {
-            const data = e.dataTransfer.getData('text/plain');
-            if (data) {
-                const ids = JSON.parse(data);
-                if(Array.isArray(ids) && ids.length) await api.moveTab(ids.map(Number), newIndex);
-            }
-        } catch(err) {}
+            const sourceId = Number(e.dataTransfer.getData('text/plain'));
+            if (!sourceId || isNaN(sourceId) || sourceId === tab.id) return;
+
+            const rect = div.getBoundingClientRect(); 
+            const newIndex = e.clientY >= rect.top + rect.height/2 ? tab.index + 1 : tab.index; 
+            
+            // Снимаем блокировку UI ПЕРЕД перемещением вкладки в браузере
+            isDragging = false; 
+            await chrome.tabs.move(sourceId, { index: newIndex });
+            
+            // Форсируем обновление списка
+            renderTabs(true);
+        } catch(err) { console.error("Drop error:", err); }
     };
+    // ----------------------------
 
     const checkWrapper = document.createElement('div');
     checkWrapper.className = 'tab-check-wrapper';
@@ -415,13 +408,25 @@ function createTabElement(tab, index) {
 
     div.querySelector('.pin-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.togglePinTab(tab.id, tab.isPinned); });
     div.querySelector('.incognito-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.openInIncognito([tab.id]); });
-    div.querySelector('.duplicate-btn')?.addEventListener('click', (e) => { e.stopPropagation(); api.duplicateTab(tab.id); });
     div.querySelector('.audio-indicator')?.addEventListener('click', (e) => { e.stopPropagation(); api.toggleMuteTab(tab.id, isMuted); });
+    
+    // --- ИСПРАВЛЕННЫЙ ДУБЛИКАТ ---
+    // Вызываем нативный метод API Chrome без лишних заморочек
+    div.querySelector('.duplicate-btn')?.addEventListener('click', (e) => { 
+        e.stopPropagation(); 
+        chrome.tabs.duplicate(tab.id);
+    });
+
+    // --- ИСПРАВЛЕННОЕ УДАЛЕНИЕ ---
+    // Прямой вызов chrome API: удалит вкладку на 100%, и Chrome сам триггернет обновление интерфейса
     div.querySelector('.close-btn')?.addEventListener('click', (e) => { 
         e.stopPropagation(); 
-        div.classList.add('closing');
-        div.addEventListener('transitionend', () => { api.closeTab(tab.id); }, { once: true });
-        setTimeout(() => api.closeTab(tab.id), 200);
+        div.style.display = 'none'; // Визуально прячем мгновенно
+        try {
+            chrome.tabs.remove(tab.id);
+        } catch(err) {
+            api.closeTab(tab.id);
+        }
     });
 
     return div;
@@ -458,20 +463,29 @@ function renderPinnedBar(pinnedTabs) {
         item.onclick = (e) => {
             if (e.target.closest('.pinned-tab-close')) {
                 e.stopPropagation();
-                api.closeTab(tab.id);
+                item.style.display = 'none';
+                chrome.tabs.remove(tab.id);
                 return;
             }
             api.activateTab(tab.id);
         };
         
         item.ondragstart = (e) => {
-            startDrag(tab.id, true);
-            e.dataTransfer.setData('text/plain', JSON.stringify([tab.id]));
+            isDragging = true;
+            draggingTabId = tab.id;
+            draggingTabPinned = true;
+            e.dataTransfer.setData('text/plain', tab.id.toString());
             e.dataTransfer.effectAllowed = 'move';
-            item.style.opacity = '0.4';
+            setTimeout(() => item.classList.add('dragging'), 0);
         };
         
-        item.ondragend = () => endDrag();
+        item.ondragend = () => {
+            isDragging = false;
+            draggingTabId = null;
+            draggingTabPinned = false;
+            item.classList.remove('dragging');
+            document.querySelectorAll('.pinned-tab-item').forEach(el => el.classList.remove('drag-over'));
+        };
         
         item.ondragover = (e) => { 
             e.preventDefault(); 
@@ -479,13 +493,16 @@ function renderPinnedBar(pinnedTabs) {
                 item.classList.add('drag-over');
             }
         };
+        
         item.ondragleave = () => item.classList.remove('drag-over');
         
         item.ondrop = async (e) => {
             e.preventDefault();
             item.classList.remove('drag-over');
             if (draggingTabPinned && draggingTabId) {
-                await api.moveTab([Number(draggingTabId)], index);
+                isDragging = false;
+                await chrome.tabs.move(Number(draggingTabId), { index: index });
+                renderTabs(true);
             }
         };
         
@@ -494,7 +511,8 @@ function renderPinnedBar(pinnedTabs) {
 }
 
 async function renderTabs(forceFullRender = false) {
-    if (isDragging) return;
+    // ВАЖНО: Если мы тащим вкладку мышкой, мы НЕ перерисовываем DOM, чтобы не сломать Drag & Drop
+    if (isDragging && !forceFullRender) return;
 
     const tabs = await api.getTabs();
     const { activeId, workspaces } = await storage.getWorkspaces();
@@ -502,22 +520,22 @@ async function renderTabs(forceFullRender = false) {
     if (!workspaces || !workspaces[activeId]) return;
     const currentWs = workspaces[activeId];
 
+    const pinnedTabs = tabs.filter(t => t.isPinned);
+    const unpinnedTabsAll = tabs.filter(t => !t.isPinned);
+
     let visibleTabs = [];
     if (activeId === 'ws_default') {
         const group = await api.findGroup("General");
-        if (group) visibleTabs = tabs.filter(t => t.groupId === group.id);
-        else visibleTabs = tabs.filter(t => t.groupId === -1);
+        if (group) visibleTabs = unpinnedTabsAll.filter(t => t.groupId === group.id);
+        else visibleTabs = unpinnedTabsAll.filter(t => t.groupId === -1);
     } else {
         const group = await api.findGroup(currentWs.name);
-        if (group) visibleTabs = tabs.filter(t => t.groupId === group.id);
+        if (group) visibleTabs = unpinnedTabsAll.filter(t => t.groupId === group.id);
     }
 
-    const pinnedTabs = visibleTabs.filter(t => t.isPinned);
-    const unpinnedTabs = visibleTabs.filter(t => !t.isPinned);
-
-    currentTabs = unpinnedTabs;
+    currentTabs = visibleTabs;
     
-    const activeTab = unpinnedTabs.find(t => t.isActive);
+    const activeTab = currentTabs.find(t => t.isActive);
     if (activeTab) previousActiveTabId = activeTab.id;
 
     renderPinnedBar(pinnedTabs);
@@ -525,10 +543,10 @@ async function renderTabs(forceFullRender = false) {
     if (!forceFullRender) {
         const existingCards = Array.from(els.tabsList.querySelectorAll('.tab-card'));
         const existingIds = existingCards.map(c => Number(c.dataset.id));
-        const newIds = unpinnedTabs.map(t => t.id);
+        const newIds = currentTabs.map(t => t.id);
         
         if (JSON.stringify(existingIds) === JSON.stringify(newIds)) {
-            unpinnedTabs.forEach(tab => {
+            currentTabs.forEach(tab => {
                 const card = els.tabsList.querySelector(`[data-id="${tab.id}"]`);
                 if (card) {
                     if (tab.isActive) card.classList.add('active');
@@ -544,13 +562,13 @@ async function renderTabs(forceFullRender = false) {
     }
 
     els.tabsList.innerHTML = '';
-    unpinnedTabs.forEach((tab, index) => {
+    currentTabs.forEach((tab, index) => {
         els.tabsList.appendChild(createTabElement(tab, index));
     });
 
     handleSearchInput();
     updateManagementPanel();
-    setTimeout(scrollToActiveTab, 50);
+    if (forceFullRender) setTimeout(scrollToActiveTab, 50);
 }
 
 function updateManagementPanel() {
@@ -584,20 +602,44 @@ async function handleBulkAction(action) {
 
     isSwitchingProgrammatically = true;
 
-    const actionsMap = {
-        'delete': () => api.closeTab(ids),
-        'split': () => { if (ids.length === 2) return api.tileTwoTabs(ids[0], ids[1]); },
-        'incognito': () => api.openInIncognito(ids),
-        'closeAbove': () => closeRelative(ids[0], 'above'),
-        'closeBelow': () => closeRelative(ids[0], 'below')
-    };
-
-    if (actionsMap[action]) {
-        await actionsMap[action]();
-        document.querySelectorAll('.tab-check-box').forEach(cb => cb.checked = false);
-        updateManagementPanel();
-        renderTabs(true);
+    if (action === 'delete') {
+        checked.forEach(cb => { cb.closest('.tab-card').style.display = 'none'; });
+        try { await chrome.tabs.remove(ids); } catch(e) { await api.closeTab(ids); }
+    } else if (action === 'split') {
+        if (ids.length === 2) { 
+            if (typeof api.tileTwoTabs === 'function') {
+                await api.tileTwoTabs(ids[0], ids[1]);
+            } else {
+                try {
+                    const currentWindow = await chrome.windows.getCurrent();
+                    const width = Math.floor(currentWindow.width / 2);
+                    await chrome.windows.update(currentWindow.id, { state: 'normal', width: width, left: 0 });
+                    await chrome.windows.create({ 
+                        tabId: ids[1], 
+                        state: 'normal', 
+                        width: width, 
+                        left: width, 
+                        top: currentWindow.top, 
+                        height: currentWindow.height 
+                    });
+                    await chrome.tabs.update(ids[0], { active: true });
+                } catch(err) { console.error('Error splitting tabs:', err); }
+            }
+        } 
+    } else if (action === 'incognito') {
+        await api.openInIncognito(ids);
+    } else if (action === 'closeAbove') {
+        await closeRelative(ids[0], 'above');
+    } else if (action === 'closeBelow') {
+        await closeRelative(ids[0], 'below');
+    } else if (action === 'duplicate') {
+        for (let id of ids) {
+            await chrome.tabs.duplicate(id);
+        }
     }
+
+    document.querySelectorAll('.tab-check-box').forEach(cb => cb.checked = false);
+    updateManagementPanel();
     
     setTimeout(() => { isSwitchingProgrammatically = false; }, 500);
 }
@@ -610,10 +652,15 @@ async function closeRelative(currentId, direction) {
     let idsToClose = [];
     if (direction === 'above') {
         idsToClose = cards.slice(0, targetIndex).map(c => Number(c.dataset.id));
+        cards.slice(0, targetIndex).forEach(c => c.style.display = 'none');
     } else {
         idsToClose = cards.slice(targetIndex + 1).map(c => Number(c.dataset.id));
+        cards.slice(targetIndex + 1).forEach(c => c.style.display = 'none');
     }
-    if (idsToClose.length) await api.closeTab(idsToClose);
+    
+    if (idsToClose.length) {
+        try { await chrome.tabs.remove(idsToClose); } catch(e) { await api.closeTab(idsToClose); }
+    }
 }
 
 async function setupBulkMoveDropdown() {
@@ -690,42 +737,13 @@ async function syncGeneralOnLoad() {
     await api.enforceGeneralGroup();
 }
 
-async function switchWorkspace(targetId) {
-    isSwitchingProgrammatically = true;
-    try {
-        const { workspaces, activeId } = await storage.getWorkspaces();
-        if (targetId === activeId) {
-            const ws = workspaces[targetId];
-            await api.activateWorkspace(ws.name);
-            isSwitchingProgrammatically = false;
-            return;
-        }
-
-        const targetWs = workspaces[targetId];
-        await storage.setActiveWorkspace(targetId);
-        
-        let { orderedIds } = await getOrderedIds();
-        const targetIndex = orderedIds.indexOf(targetId);
-        if (targetIndex >= 4) {
-            orderedIds.splice(targetIndex, 1);
-            orderedIds.splice(1, 0, targetId);
-            await saveOrderedIds(orderedIds);
-        }
-
-        await api.activateWorkspace(targetWs.name);
-
-        renderWorkspacesBar();
-        renderTabs(true);
-    } catch (e) { console.error(e); } 
-    finally { setTimeout(() => { isSwitchingProgrammatically = false; }, 500); }
-}
-
 async function renderAllProjectsList() {
     const { workspaces, orderedIds } = await getOrderedIds();
     const { activeId } = await storage.getWorkspaces();
     els.allProjectsList.innerHTML = '';
 
     const filterText = els.projectSearch ? els.projectSearch.value.toLowerCase() : '';
+    let draggedWsId = null;
 
     const createRow = (id, slotIndex = null) => {
         const ws = workspaces[id];
@@ -737,11 +755,11 @@ async function renderAllProjectsList() {
         
         let contentHTML = ``;
         if (slotIndex !== null) {
-            contentHTML += `<kbd class="shortcut-badge" style="position:relative; top:auto; left:auto; margin-right:8px; flex-shrink:0;">${slotIndex}</kbd>`;
+            contentHTML += `<kbd class="shortcut-badge" style="position:relative; top:0; left:0; transform:none !important; margin:0 8px 0 0; pointer-events:none; flex-shrink:0;">${slotIndex}</kbd>`;
         } else {
-            contentHTML += `<div style="width:14px; margin-right:8px; flex-shrink:0;"></div>`; 
+            contentHTML += `<div style="width:22px; margin-right:8px; pointer-events:none; flex-shrink:0;"></div>`; 
         }
-        contentHTML += `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(ws.name)}</span>`;
+        contentHTML += `<span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:none; line-height:1.5; display:flex; align-items:center;">${escapeHtml(ws.name)}</span>`;
         
         row.innerHTML = contentHTML;
 
@@ -765,8 +783,8 @@ async function renderAllProjectsList() {
                 if (confirm(`Are you sure you want to delete workspace "${ws.name}"?`)) {
                     await storage.deleteWorkspace(id);
                     await api.closeGroup(ws.name);
-                    renderWorkspacesBar();
-                    renderAllProjectsList();
+                    await renderWorkspacesBar();
+                    await renderAllProjectsList();
                 }
             };
             
@@ -774,19 +792,20 @@ async function renderAllProjectsList() {
             actionsDiv.appendChild(delBtn);
             row.appendChild(actionsDiv);
 
-            // ИДЕНТИЧНАЯ ЛОГИКА D&D ИЗ ВКЛАДОК
             row.draggable = true;
             row.ondragstart = (e) => {
                 if (e.target.closest('.project-actions')) {
                     e.preventDefault();
                     return;
                 }
+                draggedWsId = id;
                 e.dataTransfer.setData('text/plain', id);
                 e.dataTransfer.effectAllowed = 'move';
                 row.classList.add('dragging');
             };
 
             row.ondragend = () => {
+                draggedWsId = null;
                 row.classList.remove('dragging');
                 document.querySelectorAll('.project-row').forEach(r => {
                     r.classList.remove('sort-target-top', 'sort-target-bottom');
@@ -795,8 +814,7 @@ async function renderAllProjectsList() {
 
             row.ondragover = (e) => {
                 e.preventDefault(); 
-                const draggedId = e.dataTransfer.types.includes('text/plain');
-                if (!draggedId) return;
+                if (!draggedWsId || draggedWsId === id) return;
                 
                 const rect = row.getBoundingClientRect();
                 row.classList.remove('sort-target-top', 'sort-target-bottom');
@@ -811,8 +829,8 @@ async function renderAllProjectsList() {
             row.ondrop = async (e) => {
                 e.preventDefault();
                 row.classList.remove('sort-target-top', 'sort-target-bottom');
-                const sourceId = e.dataTransfer.getData('text/plain');
                 
+                const sourceId = e.dataTransfer.getData('text/plain');
                 if (!sourceId || sourceId === id || sourceId === 'ws_default') return;
 
                 const rect = row.getBoundingClientRect();
@@ -838,13 +856,13 @@ async function renderAllProjectsList() {
         } else {
             row.ondragover = (e) => {
                 e.preventDefault();
-                const draggedId = e.dataTransfer.types.includes('text/plain');
-                if (draggedId) row.classList.add('sort-target-bottom');
+                if (draggedWsId) row.classList.add('sort-target-bottom');
             };
             row.ondragleave = () => row.classList.remove('sort-target-bottom');
             row.ondrop = async (e) => {
                 e.preventDefault();
                 row.classList.remove('sort-target-bottom');
+                
                 const sourceId = e.dataTransfer.getData('text/plain');
                 if (!sourceId || sourceId === 'ws_default') return;
 
@@ -853,6 +871,7 @@ async function renderAllProjectsList() {
                 if (fromIdx !== -1) {
                     orderedIds.splice(fromIdx, 1);
                     orderedIds.splice(1, 0, sourceId); 
+                    
                     await saveOrderedIds(orderedIds);
                     await renderAllProjectsList();
                     await renderWorkspacesBar();
@@ -902,30 +921,67 @@ async function submitDialog() {
     const name = els.newWsName.value.trim();
     if (!name) return;
     
-    if (editingWorkspaceId) {
-        const { workspaces } = await storage.getWorkspaces();
-        const oldName = workspaces[editingWorkspaceId]?.name;
-        
-        await storage.renameWorkspace(editingWorkspaceId, name);
-        if (oldName) {
-            await api.renameGroup(oldName, name); 
+    isSwitchingProgrammatically = true; 
+    
+    try {
+        if (editingWorkspaceId) {
+            const { workspaces } = await storage.getWorkspaces();
+            const oldName = workspaces[editingWorkspaceId]?.name;
+            
+            await storage.renameWorkspace(editingWorkspaceId, name);
+            if (oldName) {
+                await api.renameGroup(oldName, name); 
+            }
+        } else {
+            await api.enforceGeneralGroup();
+            
+            const newId = await storage.createWorkspace(name);
+            
+            let { orderedIds } = await getOrderedIds();
+            orderedIds = orderedIds.filter(id => id !== newId);
+            orderedIds.splice(1, 0, newId);
+            await saveOrderedIds(orderedIds);
+
+            await storage.setActiveWorkspace(newId);
+            await api.activateWorkspace(name);
         }
-    } else {
-        await api.enforceGeneralGroup();
-        const newId = await storage.createWorkspace(name);
+        
+        els.dialog.close();
+        await renderWorkspacesBar();
+        await renderTabs(true);
+    } finally {
+        setTimeout(() => { isSwitchingProgrammatically = false; }, 500);
+    }
+}
+
+async function switchWorkspace(targetId) {
+    isSwitchingProgrammatically = true;
+    try {
+        const { workspaces, activeId } = await storage.getWorkspaces();
+        if (targetId === activeId) {
+            const ws = workspaces[targetId];
+            await api.activateWorkspace(ws.name);
+            isSwitchingProgrammatically = false;
+            return;
+        }
+
+        const targetWs = workspaces[targetId];
+        await storage.setActiveWorkspace(targetId);
         
         let { orderedIds } = await getOrderedIds();
-        orderedIds = orderedIds.filter(id => id !== newId);
-        orderedIds.splice(1, 0, newId);
-        await saveOrderedIds(orderedIds);
+        const targetIndex = orderedIds.indexOf(targetId);
+        if (targetIndex >= 4) {
+            orderedIds.splice(targetIndex, 1);
+            orderedIds.splice(1, 0, targetId);
+            await saveOrderedIds(orderedIds);
+        }
 
-        await api.activateWorkspace(name);
-        await storage.setActiveWorkspace(newId);
-    }
-    
-    els.dialog.close();
-    renderWorkspacesBar();
-    renderTabs(true);
+        await api.activateWorkspace(targetWs.name);
+
+        await renderWorkspacesBar();
+        await renderTabs(true);
+    } catch (e) { console.error(e); } 
+    finally { setTimeout(() => { isSwitchingProgrammatically = false; }, 500); }
 }
 
 async function renderWorkspacesBar() {
@@ -951,7 +1007,11 @@ async function renderWorkspacesBar() {
             btn.ondrop = async (e) => { 
                 e.preventDefault(); 
                 btn.classList.remove('drag-over'); 
-                if(draggingTabId) await api.addTabToGroupByName(Number(draggingTabId), ws.name);
+                if(draggingTabId) {
+                    isDragging = false;
+                    await api.addTabToGroupByName(Number(draggingTabId), ws.name);
+                    renderTabs(true);
+                }
             };
         }
         els.wsBar.appendChild(btn);
@@ -993,12 +1053,12 @@ function setupEventListeners() {
         els.projectsDropdown.classList.remove('open'); 
         els.settingsMenu.classList.toggle('open'); 
     });
-    els.allWsBtn?.addEventListener('click', (e) => { 
+    els.allWsBtn?.addEventListener('click', async (e) => { 
         e.stopPropagation(); 
         els.settingsMenu.classList.remove('open'); 
         els.projectsDropdown.classList.toggle('open'); 
         if(els.projectsDropdown.classList.contains('open')) { 
-            renderAllProjectsList(); 
+            await renderAllProjectsList(); 
             setTimeout(() => els.projectSearch?.focus(), 100); 
         }
     });
@@ -1047,7 +1107,7 @@ function setupEventListeners() {
         updateManagementPanel();
     });
 
-    ['delete','split','incognito','closeAbove','closeBelow'].forEach(a => 
+    ['delete','split','incognito','closeAbove','closeBelow', 'duplicate'].forEach(a => 
         els[`bulk${a.charAt(0).toUpperCase()+a.slice(1)}`]?.addEventListener('click', () => handleBulkAction(a))
     );
     els.bulkMoveBtn?.addEventListener('mouseenter', setupBulkMoveDropdown);
@@ -1109,19 +1169,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         api.subscribeToUpdates(debouncedRender);
 
-        // Двусторонняя синхронизация: если пользователь переименовал группу прямо в Chrome
         if (chrome.tabGroups) {
             chrome.tabGroups.onUpdated.addListener(async (group) => {
                 if (!group.title) return;
+                const newName = group.title.trim();
+                if (newName.toLowerCase() === 'general') return;
+
                 const { workspaces, activeId } = await storage.getWorkspaces();
                 if (activeId && workspaces[activeId]) {
                     const tabsInGroup = await chrome.tabs.query({ groupId: group.id, active: true, currentWindow: true });
                     if (tabsInGroup.length > 0) {
-                        const newName = group.title.trim();
-                        if (workspaces[activeId].name !== newName && newName.toLowerCase() !== 'general') {
+                        if (workspaces[activeId].name !== newName) {
                             await storage.renameWorkspace(activeId, newName);
-                            renderWorkspacesBar();
-                            renderAllProjectsList();
+                            await renderWorkspacesBar();
                         }
                     }
                 }
@@ -1230,10 +1290,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
+        // Защита от вечного зависания isDragging, если Drag and Drop прервался
         window.addEventListener('mouseup', () => {
             isSelectionDragging = false;
-            if (isDragging) endDrag();
+            if (isDragging) {
+                isDragging = false;
+                document.querySelectorAll('.tab-card, .pinned-tab-item').forEach(el => {
+                    el.classList.remove('dragging', 'sort-target-top', 'sort-target-bottom', 'drag-over');
+                });
+            }
         });
+
     } catch (e) { console.error("Init failed:", e); }
 });
 
